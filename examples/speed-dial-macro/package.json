@@ -1,0 +1,23 @@
+{
+  "name": "speed-dial-macro-example",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "NODE_OPTIONS=--experimental-vm-modules jest --runInBand"
+  },
+  "devDependencies": {
+    "@jest/globals": "^30.3.0",
+    "jest": "^30.3.0",
+    "jest-mock-xapi": "^1.0.0"
+  },
+  "jest": {
+    "rootDir": ".",
+    "testEnvironment": "node",
+    "moduleNameMapper": {
+      "^xapi$": "jest-mock-xapi"
+    },
+    "testMatch": [
+      "<rootDir>/**/*.test.js"
+    ]
+  }
+}

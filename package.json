@@ -1,0 +1,73 @@
+{
+  "name": "jest-mock-xapi",
+  "version": "1.0.0",
+  "description": "A jest mock xAPI module validating and testing Cisco Collaboration Device macros",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "build": "tsc -p tsconfig.build.json && node scripts/copy-schemas.mjs",
+    "prepublishOnly": "npm run build && npm test",
+    "test": "NODE_OPTIONS=--experimental-vm-modules jest",
+    "test:watch": "NODE_OPTIONS=--experimental-vm-modules jest --watchAll"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/wxsd-sales/jest-mock-xapi.git"
+  },
+  "keywords": [
+    "jest",
+    "xapi",
+    "macro"
+  ],
+  "author": "William Mills",
+  "license": "MIT",
+  "bugs": {
+    "url": "https://github.com/wxsd-sales/jest-mock-xapi/issues"
+  },
+  "homepage": "https://github.com/wxsd-sales/jest-mock-xapi#readme",
+  "publishConfig": {
+    "registry": "https://registry.npmjs.org/"
+  },
+  "devDependencies": {
+    "@jest/globals": "^30.3.0",
+    "@types/jest": "^30.0.0",
+    "@types/node": "^25.5.2",
+    "jest": "^30.3.0",
+    "nodemon": "^3.1.14",
+    "ts-jest": "^29.4.9",
+    "ts-node": "^10.9.2",
+    "typescript": "^6.0.2"
+  },
+  "peerDependencies": {
+    "@jest/globals": "^30.3.0",
+    "jest": "^30.3.0"
+  },
+  "jest": {
+    "preset": "ts-jest",
+    "testEnvironment": "node",
+    "extensionsToTreatAsEsm": [
+      ".ts"
+    ],
+    "transform": {
+      "^.+\\.ts$": [
+        "ts-jest",
+        {
+          "useESM": true
+        }
+      ]
+    },
+    "modulePathIgnorePatterns": ["<rootDir>/build/", "<rootDir>/examples/"]
+  }
+}
