@@ -4,9 +4,6 @@ Run Cisco RoomOS JavaScript macro tests in Node.js while preserving the normal `
 
 This project provides a Jest-compatible mock of the RoomOS `xapi` module so JavaScript macros for Cisco RoomOS devices can be tested locally in a standard Node environment. It exists so macro developers can validate macro behavior without having to deploy to a device for every change or lose the familiar RoomOS import pattern in their source files. It is intended for developers building and maintaining Cisco RoomOS macros who want repeatable automated tests around xAPI commands, status reads, configuration changes, and emitted events.
 
- <!--- Insert a screenshot, gif or image below that shows a little about your Demo/PoC -->
- ![image/gif](https://ezgif.com)
-
 
 ## Overview
 
@@ -16,8 +13,23 @@ The package exposes a mocked `xapi` module that mirrors the top-level `Command`,
 
 ### Flow Diagram
 
-<!-- *MANDATORY*  Insert Your Flow Diagram Here (if small PoC, alternative option is to include break down how it works here instead of diagram) -->
-![image/gif](insert img link here)
+```mermaid
+flowchart TB
+    A[Developer Writes RoomOS Macro<br/>import xapi from 'xapi'] --> B[Jest Test Imports Macro]
+    B --> C[jest-mock-xapi Replaces Runtime xapi Module]
+    C --> D[Tests Simulate Device Behavior]
+    D --> D1[Emit xAPI Events]
+    D --> D2[Seed Status or Config Values]
+    D1 --> E[Macro Logic Runs in Node.js]
+    D2 --> E
+    E --> F[Macro Calls xapi Commands or Reads State]
+    F --> G[Schema-Backed Mock Validates Paths and Arguments]
+    G --> H[Jest Assertions Verify Expected Behavior]
+    H --> I[Developer Fixes Macro Regressions Early]
+    I --> A
+```
+
+This validation flow lets a developer keep their macro source code close to the real RoomOS environment while still getting fast, repeatable feedback locally. Instead of deploying every change to a device, they can exercise macro behavior in Jest, simulate xAPI inputs, and confirm the macro issued the expected commands before shipping.
 
 
 
