@@ -26,8 +26,15 @@ This example expects `jest-mock-xapi@1.0.1` or later to be available from npm as
 
 ## Run Tests
 
+Run your tests once with:
 ```sh
 npm test
+```
+
+Run your tests continuously upon macro/test code changes with:
+
+```sh
+npm run test:watch
 ```
 
 ## How It Works

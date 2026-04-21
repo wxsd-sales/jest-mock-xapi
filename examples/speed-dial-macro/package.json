@@ -4,7 +4,7 @@
   "type": "module",
   "scripts": {
     "test": "NODE_OPTIONS=--experimental-vm-modules jest --runInBand",
-    "test:watch": "NODE_OPTIONS=--experimental-vm-modules jest --watchAll"
+    "test:watch": "NODE_OPTIONS=--experimental-vm-modules jest --watchAll --runInBand"
   },
   "devDependencies": {
     "@jest/globals": "^30.3.0",

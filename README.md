@@ -52,8 +52,8 @@ The package exposes a mocked `xapi` module that mirrors the top-level `Command`,
     ```json
     {
       "scripts": {
-        "test": "NODE_OPTIONS=--experimental-vm-modules jest",
-        "test:watch": "NODE_OPTIONS=--experimental-vm-modules jest --watchAll"
+        "test": "NODE_OPTIONS=--experimental-vm-modules jest --runInBand",
+        "test:watch": "NODE_OPTIONS=--experimental-vm-modules jest --watchAll --runInBand"
       }
     }
     ```
