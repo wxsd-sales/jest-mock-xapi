@@ -10,29 +10,6 @@ This project provides a Jest-compatible mock of the RoomOS `xapi` module so Java
 The package exposes a mocked `xapi` module that mirrors the top-level `Command`, `Status`, `Config`, and `Event` areas that RoomOS macro developers already use. Internally, it uses a schema-backed proxy so only valid xAPI paths are available, and each path resolves to a Jest mock function that can be inspected with normal Jest matchers. Commands resolve as promises so command handlers look like the real RoomOS async API, while status, configuration, and event paths support setting values, subscribing to changes, and emitting updates from tests. In practice, a macro test imports the macro, uses the mock xAPI to seed state or emit events, and then asserts that the macro called the expected xAPI command or updated the expected path in response.
 
 
-
-### Flow Diagram
-
-```mermaid
-flowchart TB
-    A[Developer Writes RoomOS Macro<br/>import xapi from 'xapi'] --> B[Jest Test Imports Macro]
-    B --> C[jest-mock-xapi Replaces Runtime xapi Module]
-    C --> D[Tests Simulate Device Behavior]
-    D --> D1[Emit xAPI Events]
-    D --> D2[Seed Status or Config Values]
-    D1 --> E[Macro Logic Runs in Node.js]
-    D2 --> E
-    E --> F[Macro Calls xapi Commands or Reads State]
-    F --> G[Schema-Backed Mock Validates Paths and Arguments]
-    G --> H[Jest Assertions Verify Expected Behavior]
-    H --> I[Developer Fixes Macro Regressions Early]
-    I --> A
-```
-
-This validation flow lets a developer keep their macro source code close to the real RoomOS environment while still getting fast, repeatable feedback locally. Instead of deploying every change to a device, they can exercise macro behavior in Jest, simulate xAPI inputs, and confirm the macro issued the expected commands before shipping.
-
-
-
 ## Setup
 
 ### Prerequisites & Dependencies: 
@@ -50,27 +27,37 @@ This validation flow lets a developer keep their macro source code close to the 
     ```sh
     npm install --save-dev jest jest-mock-xapi
     ```
-2.  Create a Jest setup file that maps the runtime `xapi` import to the mock package.
-    ```js
-    import xapi from "jest-mock-xapi";
-    import { jest } from "@jest/globals";
+2.  Choose one Jest integration option.
 
-    jest.mock("xapi", () => {
-      return {
-        __esModule: true,
-        default: xapi,
-      };
-    }, { virtual: true });
-    ```
-3.  Register that setup file in your Jest configuration so it runs before your macro tests.
+    Option 1 (recommended): Map `xapi` directly to `jest-mock-xapi` with `moduleNameMapper`.
     ```json
     {
       "jest": {
-        "setupFiles": ["<rootDir>/jest.setup.js"]
+        "moduleNameMapper": {
+          "^xapi$": "jest-mock-xapi"
+        }
       }
     }
     ```
-4.  Write tests that import your macro, set xAPI values or emit xAPI changes, and then assert the macro responded correctly.
+
+    Option 2: Register the virtual `xapi` module through the package's setup entrypoint if you prefer a setup-file workflow.
+    ```json
+    {
+      "jest": {
+        "setupFiles": ["jest-mock-xapi/register"]
+      }
+    }
+    ```
+3.  Add Jest test scripts to your macro project's `package.json`.
+    ```json
+    {
+      "scripts": {
+        "test": "NODE_OPTIONS=--experimental-vm-modules jest",
+        "test:watch": "NODE_OPTIONS=--experimental-vm-modules jest --watchAll"
+      }
+    }
+    ```
+4.  With option 1 in place, write tests that import your macro, set xAPI values or emit xAPI changes, and then assert the macro responded correctly.
     ```js
     import { beforeEach, describe, expect, it, jest } from "@jest/globals";
 
@@ -97,15 +84,30 @@ This validation flow lets a developer keep their macro source code close to the 
     });
     ```
 5.  Run the tests from your macro project.
+
+    Run your tests once with:
     ```sh
-    npx jest --runInBand
+    npm test
     ```
+
+    Run your tests continuously upon macro/test code changes with:
+
+    ```sh
+    npm run test:watch
+    ```
+
+The package now has a split API:
+
+- `jest-mock-xapi` exports the mock object itself and is the recommended target for `moduleNameMapper`.
+- `jest-mock-xapi/register` registers a virtual `xapi` module for Jest setup-file workflows.
     
 ## Demo
 
 The expected development flow is that a macro developer installs `jest-mock-xapi`, keeps their production macro code written for the native RoomOS runtime, and uses Jest to control the mock device state from tests. Tests can call `xapi.Status...set(...)` or `xapi.Config...set(...)` to simulate device state changes, use `xapi.Event...emit(...)` to trigger the same events a RoomOS device would emit, and then validate that the macro reacted by calling the required command path such as `xapi.Command.UserInterface.Extensions.Panel.Save(...)` or `xapi.Command.Dial(...)`.
 
 For read-based behavior, tests can seed values before importing the macro or before invoking the macro logic, then assert that the macro issued the correct follow-up action. For change-driven behavior, tests should register the macro, emit a status, config, or event update through the mock xAPI object, and verify the macro made the required response with normal Jest assertions like `toHaveBeenCalledWith(...)`, `toHaveBeenCalledTimes(...)`, or `not.toHaveBeenCalled()`.
+
+For a complete working example, see the [speed-dial-macro demo](./examples/speed-dial-macro/README.md).
 
 *For more demos & PoCs like this, check out our [Webex Labs site](https://collabtoolbox.cisco.com/webex-labs).
 

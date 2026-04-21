@@ -4,7 +4,7 @@ This example shows the normal workflow for a RoomOS macro author:
 
 - write the macro in plain JavaScript
 - keep the production import as `import xapi from "xapi"`
-- install `jest-mock-xapi` as a development dependency for tests
+- install `jest-mock-xapi` as a development dependency for tests using the recommended `moduleNameMapper` setup
 
 The example is intentionally standalone and does not import anything from this repository's `src/` folder.
 
@@ -12,7 +12,7 @@ The example is intentionally standalone and does not import anything from this r
 
 - [speed-dial-macro.js](./speed-dial-macro.js) is the production macro
 - [speed-dial-macro.test.js](./speed-dial-macro.test.js) is the Jest test
-- [package.json](./package.json) maps the `xapi` module to `jest-mock-xapi` during tests
+- [package.json](./package.json) maps `xapi` to the published `jest-mock-xapi` package during tests
 
 ## Install
 
@@ -22,7 +22,7 @@ Create a new folder for your macro project, copy these files into it, then run:
 npm install
 ```
 
-This example expects `jest-mock-xapi` to be available from npm as a normal dev dependency.
+This example expects `jest-mock-xapi@1.0.1` or later to be available from npm as a normal dev dependency.
 
 ## Run Tests
 
@@ -32,7 +32,9 @@ npm test
 
 ## How It Works
 
-In the test environment, Jest remaps:
+This example follows option 1 from the main package README.
+
+In the test environment, Jest remaps the macro's normal import:
 
 ```js
 import xapi from "xapi";
@@ -40,7 +42,13 @@ import xapi from "xapi";
 
 to the published `jest-mock-xapi` package using `moduleNameMapper`.
 
-That means the macro code stays close to real RoomOS macro code, while tests can still assert things like:
+That means the test imports `xapi` exactly the same way as the production macro:
+
+```js
+const { default: xapi } = await import("xapi");
+```
+
+The macro code stays close to real RoomOS macro code, while tests can still assert things like:
 
 - `xapi.Command.UserInterface.Extensions.Panel.Save(...)`
 - `xapi.Command.Dial(...)`

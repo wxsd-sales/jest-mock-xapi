@@ -3,21 +3,19 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "test": "NODE_OPTIONS=--experimental-vm-modules jest --runInBand"
+    "test": "NODE_OPTIONS=--experimental-vm-modules jest --runInBand",
+    "test:watch": "NODE_OPTIONS=--experimental-vm-modules jest --watchAll"
   },
   "devDependencies": {
     "@jest/globals": "^30.3.0",
     "jest": "^30.3.0",
-    "jest-mock-xapi": "^1.0.0"
+    "jest-mock-xapi": "^1.0.1"
   },
   "jest": {
     "rootDir": ".",
     "testEnvironment": "node",
     "moduleNameMapper": {
       "^xapi$": "jest-mock-xapi"
-    },
-    "testMatch": [
-      "<rootDir>/**/*.test.js"
-    ]
+    }
   }
 }

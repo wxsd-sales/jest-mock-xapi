@@ -11,8 +11,12 @@ describe("speed-dial-macro", () => {
     xapi.removeAllListeners();
     await import("./speed-dial-macro.js");
 
-    expect(xapi.Command.UserInterface.Extensions.Panel.Save).toHaveBeenCalledTimes(1);
-    expect(xapi.Command.UserInterface.Extensions.Panel.Save).toHaveBeenCalledWith(
+    expect(
+      xapi.Command.UserInterface.Extensions.Panel.Save,
+    ).toHaveBeenCalledTimes(1);
+    expect(
+      xapi.Command.UserInterface.Extensions.Panel.Save,
+    ).toHaveBeenCalledWith(
       { PanelId: "speed-dial-panel" },
       expect.stringContaining("<Name>Button</Name>"),
     );
@@ -29,7 +33,9 @@ describe("speed-dial-macro", () => {
     });
 
     expect(xapi.Command.Dial).toHaveBeenCalledTimes(1);
-    expect(xapi.Command.Dial).toHaveBeenCalledWith({ Number: "number@example.com" });
+    expect(xapi.Command.Dial).toHaveBeenCalledWith({
+      Number: "number@example.com",
+    });
   });
 
   it("ignores unrelated panel click events", async () => {
