@@ -10,6 +10,7 @@ interface XapiErrorPayload {
 
 interface ProxyInvocation {
   args: any[];
+  node: SchemaNode;
   operation: ProxyOperation;
   path: string[];
 }
@@ -86,6 +87,7 @@ export default function proxy(options: SchemaProxyOptions) {
 
     return invoke({
       args,
+      node,
       operation: operation ?? "call",
       path,
     });
@@ -150,7 +152,10 @@ export default function proxy(options: SchemaProxyOptions) {
         });
       }
 
-      if (node.terminal && allowedMethods.includes(prop as ProxyOperation)) {
+      if (
+        allowedMethods.includes(prop as ProxyOperation) &&
+        (node.terminal || prop === "get" || prop === "on")
+      ) {
         return proxy({
           callable: true,
           invoke,

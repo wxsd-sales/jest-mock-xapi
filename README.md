@@ -100,12 +100,230 @@ The package now has a split API:
 
 - `jest-mock-xapi` exports the mock object itself and is the recommended target for `moduleNameMapper`.
 - `jest-mock-xapi/register` registers a virtual `xapi` module for Jest setup-file workflows.
-    
+
+## Usage
+
+The expected development flow is that a macro developer installs `jest-mock-xapi`, keeps production macro code written for the native RoomOS runtime, and uses Jest to control mock device state from tests. In practice, a test imports the macro, seeds status or config values, emits events or updates, and then asserts the macro reacted with the expected xAPI calls.
+
+### Reset state between tests
+
+Most test suites should clear mocks and listeners before each test so one scenario does not leak into the next.
+
+```js
+import { beforeEach, jest } from "@jest/globals";
+
+beforeEach(async () => {
+  jest.resetModules();
+  const { default: xapi } = await import("xapi");
+  jest.clearAllMocks();
+  xapi.removeAllListeners();
+});
+```
+
+### Assert xCommand calls
+
+Commands are Jest mocks, so you can assert on them with normal Jest matchers.
+
+```js
+import { expect, it } from "@jest/globals";
+
+it("dials the requested destination", async () => {
+  const { default: xapi } = await import("xapi");
+
+  await someMacroFunction();
+
+  expect(xapi.Command.Dial).toHaveBeenCalledWith({
+    Number: "number@example.com",
+  });
+});
+```
+
+### Seed leaf status and config values
+
+Use `set()` to prepare mock device state before importing a macro or invoking a handler.
+
+```js
+import { expect, it } from "@jest/globals";
+
+it("reads the prepared default volume", async () => {
+  const { default: xapi } = await import("xapi");
+
+  xapi.Config.Audio.DefaultVolume.set(40);
+  xapi.Status.Audio.Volume.set(20);
+
+  expect(xapi.Config.Audio.DefaultVolume.get()).toBe(40);
+  expect(xapi.Status.Audio.Volume.get()).toBe(20);
+});
+```
+
+### Read full status or config branches
+
+The mock supports aggregate `get()` calls on root paths and indexed branches, similar to the real xAPI module.
+
+```js
+import { expect, it } from "@jest/globals";
+
+it("returns full config branches", async () => {
+  const { default: xapi } = await import("xapi");
+
+  xapi.Config.Cameras.Camera[1].Brightness.Mode.set("Manual");
+  xapi.Config.Cameras.Camera[2].Brightness.Mode.set("Auto");
+
+  expect(xapi.Config.get()).toHaveProperty("Audio");
+  expect(xapi.Config.Cameras.Camera[1].get()).toEqual({
+    Brightness: {
+      Mode: "Manual",
+    },
+  });
+  expect(xapi.Config.Cameras.Camera.get()).toEqual([
+    { Brightness: { Mode: "Manual" } },
+    { Brightness: { Mode: "Auto" } },
+  ]);
+  expect(xapi.Config.Cameras.Camera["*"].get()).toEqual([
+    { Brightness: { Mode: "Manual" } },
+    { Brightness: { Mode: "Auto" } },
+  ]);
+});
+```
+
+### Emit xEvent payloads
+
+Use `emit()` on event paths to simulate the same payloads a RoomOS device would send to a macro.
+
+```js
+import { expect, it } from "@jest/globals";
+
+it("reacts to a panel press", async () => {
+  const { default: xapi } = await import("xapi");
+
+  await import("./my-macro.js");
+
+  xapi.Event.UserInterface.Extensions.Panel.Clicked.emit({
+    PanelId: "speed-dial-panel",
+  });
+
+  expect(xapi.Command.Dial).toHaveBeenCalledWith({
+    Number: "number@example.com",
+  });
+});
+```
+
+### Subscribe to leaf updates
+
+Leaf subscriptions behave like the real macro API and receive the updated value directly.
+
+```js
+import { expect, it, jest } from "@jest/globals";
+
+it("notifies leaf status listeners", async () => {
+  const { default: xapi } = await import("xapi");
+  const handler = jest.fn();
+
+  xapi.Status.Audio.Volume.on(handler);
+  xapi.Status.Audio.Volume.set(55);
+
+  expect(handler).toHaveBeenCalledWith(55);
+});
+```
+
+### Subscribe to root or branch updates
+
+Root and branch listeners receive a nested payload scoped to the changed branch.
+
+```js
+import { expect, it, jest } from "@jest/globals";
+
+it("notifies root listeners with relative path payloads", async () => {
+  const { default: xapi } = await import("xapi");
+  const statusHandler = jest.fn();
+  const configHandler = jest.fn();
+  const eventHandler = jest.fn();
+
+  xapi.Status.on(statusHandler);
+  xapi.Config.on(configHandler);
+  xapi.Event.on(eventHandler);
+
+  xapi.Status.Audio.Volume.set(55);
+  xapi.Config.Audio.DefaultVolume.set(35);
+  xapi.Event.UserInterface.Extensions.Panel.Clicked.emit({
+    PanelId: "speed-dial-panel",
+  });
+
+  expect(statusHandler).toHaveBeenCalledWith({
+    Audio: {
+      Volume: 55,
+    },
+  });
+  expect(configHandler).toHaveBeenCalledWith({
+    Audio: {
+      DefaultVolume: 35,
+    },
+  });
+  expect(eventHandler).toHaveBeenCalledWith({
+    UserInterface: {
+      Extensions: {
+        Panel: {
+          Clicked: {
+            PanelId: "speed-dial-panel",
+          },
+        },
+      },
+    },
+  });
+});
+```
+
+### Track indexed status branches such as calls
+
+Indexed collection listeners such as `xapi.Status.Call.on(...)` receive the full branch snapshot plus the branch `id`.
+
+```js
+import { expect, it, jest } from "@jest/globals";
+
+it("notifies call listeners as a call branch changes", async () => {
+  const { default: xapi } = await import("xapi");
+  const handler = jest.fn();
+
+  xapi.Status.Call.on(handler);
+  xapi.Status.Call[42].Direction.set("Outgoing");
+  xapi.Status.Call[42].Status.set("Connected");
+
+  expect(handler).toHaveBeenNthCalledWith(1, {
+    Direction: "Outgoing",
+    id: "42",
+  });
+  expect(handler).toHaveBeenNthCalledWith(2, {
+    Direction: "Outgoing",
+    Status: "Connected",
+    id: "42",
+  });
+});
+```
+
+### Remove indexed status branches
+
+Use `removeStatus()` to simulate an indexed status branch disappearing, such as a call ending.
+
+```js
+import { expect, it, jest } from "@jest/globals";
+
+it("emits a ghost payload when a call ends", async () => {
+  const { default: xapi } = await import("xapi");
+  const handler = jest.fn();
+
+  xapi.Status.Call.on(handler);
+  xapi.Status.Call[7].Direction.set("Incoming");
+
+  xapi.removeStatus("Call.7");
+
+  expect(handler).toHaveBeenLastCalledWith({
+    ghost: "true",
+    id: "7",
+  });
+});
+```
+
 ## Demo
-
-The expected development flow is that a macro developer installs `jest-mock-xapi`, keeps their production macro code written for the native RoomOS runtime, and uses Jest to control the mock device state from tests. Tests can call `xapi.Status...set(...)` or `xapi.Config...set(...)` to simulate device state changes, use `xapi.Event...emit(...)` to trigger the same events a RoomOS device would emit, and then validate that the macro reacted by calling the required command path such as `xapi.Command.UserInterface.Extensions.Panel.Save(...)` or `xapi.Command.Dial(...)`.
-
-For read-based behavior, tests can seed values before importing the macro or before invoking the macro logic, then assert that the macro issued the correct follow-up action. For change-driven behavior, tests should register the macro, emit a status, config, or event update through the mock xAPI object, and verify the macro made the required response with normal Jest assertions like `toHaveBeenCalledWith(...)`, `toHaveBeenCalledTimes(...)`, or `not.toHaveBeenCalled()`.
 
 For a complete working example, see the [speed-dial-macro demo](./examples/speed-dial-macro/README.md).
 

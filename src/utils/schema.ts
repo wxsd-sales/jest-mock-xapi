@@ -141,6 +141,10 @@ export function resolveSchemaChild(node: SchemaNode, prop: string) {
     return undefined;
   }
 
+  if (prop === "*") {
+    return indexedChild.node;
+  }
+
   if (indexedChild.wildcard) {
     return indexedChild.node;
   }

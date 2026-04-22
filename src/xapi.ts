@@ -1,5 +1,11 @@
 import { EventEmitter } from "events";
-import { loadSchemaModel, proxy, logger } from "./utils/index.ts";
+import {
+  loadSchemaModel,
+  proxy,
+  logger,
+  resolveSchemaChild,
+  type SchemaNode,
+} from "./utils/index.ts";
 
 const commandSuccessResponse = { status: "OK" };
 const invalidCommandError = { code: -32601, message: "Method not found." };
@@ -12,6 +18,7 @@ const invalidPathError = {
   message: "No match on Path argument",
 };
 const schemaModel = loadSchemaModel();
+const materializedValueSymbol = Symbol("materializedValue");
 
 class MockXapi extends EventEmitter {
   #configStore = new Map<string, unknown>(schemaModel.defaults);
@@ -43,16 +50,16 @@ class MockXapi extends EventEmitter {
     this.Config = proxy({
       allowedMethods: ["get", "set", "on"],
       invalidError: invalidPathError,
-      invoke: ({ args, operation, path }) => {
-        const storeKey = this.#getStoreKey(path);
-
+      invoke: ({ args, node, operation, path }) => {
         if (operation === "get") {
-          return this.#configStore.get(storeKey);
+          return this.#getMaterializedStoreValue(this.#configStore, node, path);
         }
+
+        const storeKey = this.#getStoreKey(path);
 
         if (operation === "set") {
           this.#configStore.set(storeKey, args[0]);
-          this.emit(`Config:${storeKey}`, args[0]);
+          this.#emitStoreChange("Config", this.#configStore, path, args[0]);
           return args[0];
         }
 
@@ -69,12 +76,12 @@ class MockXapi extends EventEmitter {
     this.Status = proxy({
       allowedMethods: ["get", "on", "set"],
       invalidError: invalidPathError,
-      invoke: ({ args, operation, path }) => {
-        const storeKey = this.#getStoreKey(path);
-
+      invoke: ({ args, node, operation, path }) => {
         if (operation === "get") {
-          return this.#statusStore.get(storeKey);
+          return this.#getMaterializedStoreValue(this.#statusStore, node, path);
         }
+
+        const storeKey = this.#getStoreKey(path);
 
         if (operation === "on") {
           return this.on(`Status:${storeKey}`, args[0]);
@@ -82,7 +89,7 @@ class MockXapi extends EventEmitter {
 
         if (operation === "set") {
           this.#statusStore.set(storeKey, args[0]);
-          this.emit(`Status:${storeKey}`, args[0]);
+          this.#emitStoreChange("Status", this.#statusStore, path, args[0]);
           return args[0];
         }
 
@@ -102,7 +109,8 @@ class MockXapi extends EventEmitter {
         }
 
         if (operation === "emit") {
-          return this.emit(`Event:${eventKey}`, args[0]);
+          this.#emitScopedChange("Event", null, this.#getPathSegments(path), args[0]);
+          return true;
         }
 
         throw new Error(`Unsupported event operation: ${operation}`);
@@ -114,6 +122,431 @@ class MockXapi extends EventEmitter {
 
   #getStoreKey(path: string[]) {
     return path.slice(0, -1).join(".");
+  }
+
+  #getPathSegments(path: string[]) {
+    return path.slice(0, -1);
+  }
+
+  #getSchemaRoot(pathRoot: string) {
+    if (pathRoot === "Config") {
+      return schemaModel.roots.Configuration;
+    }
+
+    if (pathRoot === "Status") {
+      return schemaModel.roots.Status;
+    }
+
+    if (pathRoot === "Command") {
+      return schemaModel.roots.Command;
+    }
+
+    return schemaModel.roots.Event;
+  }
+
+  #resolvePathNode(pathSegments: string[]) {
+    const [rootSegment, ...remainingSegments] = pathSegments;
+    if (typeof rootSegment !== "string") {
+      return null;
+    }
+
+    let currentNode = this.#getSchemaRoot(rootSegment);
+
+    for (const segment of remainingSegments) {
+      const nextNode = resolveSchemaChild(currentNode, segment);
+      if (!nextNode) {
+        return null;
+      }
+
+      currentNode = nextNode;
+    }
+
+    return currentNode;
+  }
+
+  #matchStoreKey(querySegments: string[], storeSegments: string[]) {
+    if (storeSegments.length < querySegments.length) {
+      return null;
+    }
+
+    const [rootSegment] = querySegments;
+    if (typeof rootSegment !== "string") {
+      return null;
+    }
+
+    const capturedWildcardSegments: string[] = [];
+    let currentNode = this.#getSchemaRoot(rootSegment);
+
+    for (const [index, querySegment] of querySegments.entries()) {
+      const storeSegment = storeSegments[index];
+
+      if (typeof storeSegment === "undefined") {
+        return null;
+      }
+
+      if (index === 0) {
+        if (querySegment !== storeSegment) {
+          return null;
+        }
+
+        continue;
+      }
+
+      if (querySegment === "*") {
+        if (!this.#matchesIndexedSegment(currentNode, storeSegment)) {
+          return null;
+        }
+
+        capturedWildcardSegments.push(storeSegment);
+        currentNode = currentNode.indexedChild?.node ?? currentNode;
+        continue;
+      }
+
+      if (querySegment !== storeSegment) {
+        return null;
+      }
+
+      if (currentNode.children.has(querySegment)) {
+        currentNode = currentNode.children.get(querySegment) ?? currentNode;
+        continue;
+      }
+
+      if (this.#matchesIndexedSegment(currentNode, querySegment)) {
+        currentNode = currentNode.indexedChild?.node ?? currentNode;
+      }
+    }
+
+    return {
+      projectedSegments: [
+        ...capturedWildcardSegments,
+        ...storeSegments.slice(querySegments.length),
+      ],
+    };
+  }
+
+  #matchesIndexedSegment(node: SchemaNode, segment: string) {
+    const indexedChild = node.indexedChild;
+
+    if (!indexedChild) {
+      return false;
+    }
+
+    if (indexedChild.wildcard) {
+      return true;
+    }
+
+    if (indexedChild.allowedValues.has(segment)) {
+      return true;
+    }
+
+    const numericValue = Number(segment);
+    if (Number.isNaN(numericValue)) {
+      return false;
+    }
+
+    return indexedChild.ranges.some(
+      (range: { min: number; max: number }) =>
+        numericValue >= range.min && numericValue <= range.max,
+    );
+  }
+
+  #insertMaterializedValue(
+    target: Record<string | symbol, unknown>,
+    projectedSegments: string[],
+    value: unknown,
+  ) {
+    if (projectedSegments.length === 0) {
+      target[materializedValueSymbol] = value;
+      return;
+    }
+
+    const [segment, ...remainingSegments] = projectedSegments;
+    if (typeof segment !== "string") {
+      return;
+    }
+
+    const child =
+      typeof target[segment] === "object" && target[segment] !== null
+        ? (target[segment] as Record<string | symbol, unknown>)
+        : {};
+
+    target[segment] = child;
+    this.#insertMaterializedValue(child, remainingSegments, value);
+  }
+
+  #createRelativePayload(relativeSegments: string[], value: unknown) {
+    if (relativeSegments.length === 0) {
+      return value;
+    }
+
+    const payload: Record<string | symbol, unknown> = {};
+    this.#insertMaterializedValue(payload, relativeSegments, value);
+    return this.#finalizeMaterializedValue(payload);
+  }
+
+  #finalizeMaterializedValue(value: unknown): unknown {
+    if (typeof value !== "object" || value === null || Array.isArray(value)) {
+      return value;
+    }
+
+    const objectValue = value as Record<string | symbol, unknown>;
+    const keys = Reflect.ownKeys(objectValue).filter(
+      (key) => key !== materializedValueSymbol,
+    );
+    const hasScalarValue = Object.getOwnPropertySymbols(objectValue).includes(
+      materializedValueSymbol,
+    );
+
+    if (keys.length === 0 && hasScalarValue) {
+      return objectValue[materializedValueSymbol];
+    }
+
+    const numericKeys = keys.filter(
+      (key) => typeof key === "string" && /^\d+$/.test(key),
+    );
+
+    if (keys.length > 0 && numericKeys.length === keys.length) {
+      return numericKeys
+        .sort((left, right) => Number(left) - Number(right))
+        .map((key) =>
+          this.#finalizeMaterializedValue(objectValue[key]),
+        );
+    }
+
+    const result: Record<string, unknown> = {};
+
+    for (const key of keys) {
+      if (typeof key !== "string") {
+        continue;
+      }
+
+      result[key] = this.#finalizeMaterializedValue(
+        objectValue[key],
+      );
+    }
+
+    if (hasScalarValue) {
+      return objectValue[materializedValueSymbol];
+    }
+
+    return result;
+  }
+
+  #getMaterializedStoreValue(
+    store: Map<string, unknown>,
+    node: SchemaNode,
+    path: string[],
+  ) {
+    const querySegments = this.#getPathSegments(path);
+    const exactStoreKey = querySegments.join(".");
+
+    if (!querySegments.includes("*") && store.has(exactStoreKey)) {
+      return store.get(exactStoreKey);
+    }
+
+    const shouldCollectIndexedChildren = Boolean(
+      node.indexedChild && !querySegments.includes("*"),
+    );
+    const materializedResult: Record<string | symbol, unknown> = {};
+    let matchCount = 0;
+
+    for (const [storeKey, storeValue] of store.entries()) {
+      const storeSegments = storeKey.split(".");
+      let projectedSegments: string[] | null = null;
+
+      if (shouldCollectIndexedChildren) {
+        if (storeSegments.length <= querySegments.length) {
+          continue;
+        }
+
+        const prefixMatches = querySegments.every(
+          (querySegment, index) => storeSegments[index] === querySegment,
+        );
+
+        if (!prefixMatches) {
+          continue;
+        }
+
+        const indexedSegment = storeSegments[querySegments.length];
+        if (typeof indexedSegment !== "string") {
+          continue;
+        }
+
+        if (!this.#matchesIndexedSegment(node, indexedSegment)) {
+          continue;
+        }
+
+        projectedSegments = [
+          indexedSegment,
+          ...storeSegments.slice(querySegments.length + 1),
+        ];
+      } else {
+        const match = this.#matchStoreKey(querySegments, storeSegments);
+
+        if (!match) {
+          continue;
+        }
+
+        projectedSegments = match.projectedSegments;
+      }
+
+      if (!projectedSegments) {
+        continue;
+      }
+
+      matchCount += 1;
+      this.#insertMaterializedValue(materializedResult, projectedSegments, storeValue);
+    }
+
+    if (matchCount === 0) {
+      return undefined;
+    }
+
+    return this.#finalizeMaterializedValue(materializedResult);
+  }
+
+  #createIndexedBranchPayload(
+    store: Map<string, unknown>,
+    collectionPathSegments: string[],
+    indexSegment: string,
+    isGhost = false,
+  ) {
+    if (isGhost) {
+      return {
+        ghost: "true",
+        id: indexSegment,
+      };
+    }
+
+    const branchPath = [...collectionPathSegments, indexSegment];
+    const branchNode = this.#resolvePathNode(branchPath);
+    const branchValue = branchNode
+      ? this.#getMaterializedStoreValue(store, branchNode, [...branchPath, "get"])
+      : undefined;
+
+    if (typeof branchValue === "object" && branchValue !== null && !Array.isArray(branchValue)) {
+      return {
+        id: indexSegment,
+        ...(branchValue as Record<string, unknown>),
+      };
+    }
+
+    if (typeof branchValue === "undefined") {
+      return {
+        id: indexSegment,
+      };
+    }
+
+    return {
+      id: indexSegment,
+      value: branchValue,
+    };
+  }
+
+  #emitScopedChange(
+    domain: "Config" | "Status" | "Event",
+    store: Map<string, unknown> | null,
+    changedPathSegments: string[],
+    value: unknown,
+    options?: {
+      ghostIndexSegment?: string;
+    },
+  ) {
+    for (let scopeLength = changedPathSegments.length; scopeLength >= 1; scopeLength -= 1) {
+      const scopePathSegments = changedPathSegments.slice(0, scopeLength);
+      const scopeNode = this.#resolvePathNode(scopePathSegments);
+      if (!scopeNode) {
+        continue;
+      }
+
+      let payload: unknown;
+      const nextSegment = changedPathSegments[scopeLength];
+      const shouldEmitIndexedBranchPayload =
+        Boolean(store) &&
+        Boolean(scopeNode.indexedChild) &&
+        typeof nextSegment === "string" &&
+        this.#matchesIndexedSegment(scopeNode, nextSegment);
+
+      if (shouldEmitIndexedBranchPayload && store) {
+        payload = this.#createIndexedBranchPayload(
+          store,
+          scopePathSegments,
+          nextSegment,
+          options?.ghostIndexSegment === nextSegment &&
+            scopeLength + 1 === changedPathSegments.length,
+        );
+      } else {
+        payload = this.#createRelativePayload(
+          changedPathSegments.slice(scopeLength),
+          value,
+        );
+      }
+
+      this.emit(`${domain}:${scopePathSegments.join(".")}`, payload);
+    }
+  }
+
+  #emitStoreChange(
+    domain: "Config" | "Status",
+    store: Map<string, unknown>,
+    path: string[],
+    value: unknown,
+  ) {
+    const changedPathSegments = this.#getPathSegments(path);
+    this.#emitScopedChange(domain, store, changedPathSegments, value);
+  }
+
+  #normalizeDomainPath(domain: "Config" | "Status", path: string) {
+    const segments = path.split(".").filter(Boolean);
+
+    if (segments[0] === domain) {
+      return segments;
+    }
+
+    return [domain, ...segments];
+  }
+
+  #removeStoreBranch(domain: "Config" | "Status", store: Map<string, unknown>, path: string) {
+    const normalizedPath = this.#normalizeDomainPath(domain, path);
+    const branchKey = normalizedPath.join(".");
+    let removed = false;
+
+    for (const storeKey of [...store.keys()]) {
+      if (storeKey === branchKey || storeKey.startsWith(`${branchKey}.`)) {
+        store.delete(storeKey);
+        removed = true;
+      }
+    }
+
+    if (!removed) {
+      return false;
+    }
+
+    const parentPath = normalizedPath.slice(0, -1);
+    const removedSegment = normalizedPath.at(-1);
+    const parentNode = parentPath.length > 0 ? this.#resolvePathNode(parentPath) : null;
+    const isIndexedBranchRemoval =
+      parentNode !== null &&
+      Boolean(parentNode.indexedChild) &&
+      typeof removedSegment === "string" &&
+      this.#matchesIndexedSegment(parentNode, removedSegment);
+
+    const removalPayload = isIndexedBranchRemoval
+      ? {
+          ghost: "true",
+          id: removedSegment,
+        }
+      : undefined;
+
+    this.#emitScopedChange(
+      domain,
+      store,
+      normalizedPath,
+      removalPayload,
+      isIndexedBranchRemoval ? { ghostIndexSegment: removedSegment } : undefined,
+    );
+
+    return true;
   }
 
   #createInvalidCommandParameterError(parameterName: string) {
@@ -290,7 +723,13 @@ class MockXapi extends EventEmitter {
 
   // Helper to emit mock events in tests
   emitEvent(eventName: string, eventData: any) {
-    this.emit(`Event:Event.${eventName}`, eventData);
+    const eventSegments = ["Event", ...eventName.split(".").filter(Boolean)];
+    this.#emitScopedChange("Event", null, eventSegments, eventData);
+  }
+
+  // Helper to remove a status branch in tests, such as a call ending.
+  removeStatus(path: string) {
+    return this.#removeStoreBranch("Status", this.#statusStore, path);
   }
 
 }
