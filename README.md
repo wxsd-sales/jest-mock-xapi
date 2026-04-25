@@ -138,6 +138,20 @@ it("dials the requested destination", async () => {
 });
 ```
 
+### Use RoomOS runtime globals
+
+The mock installs the RoomOS `_main_module_name()` global when `jest-mock-xapi` is loaded. It returns the name of the calling macro file without the source extension, matching the RoomOS behavior used by self-managing macros.
+
+```js
+import xapi from "xapi";
+
+const macroName = _main_module_name();
+
+xapi.Command.Macros.Macro.Deactivate({ Name: macroName });
+```
+
+For example, calling `_main_module_name()` from `self-deactivating-macro.js` returns `"self-deactivating-macro"`.
+
 ### Seed leaf status and config values
 
 Use `set()` to prepare mock device state before importing a macro or invoking a handler.
@@ -155,6 +169,38 @@ it("reads the prepared default volume", async () => {
   expect(xapi.Status.Audio.Volume.get()).toBe(20);
 });
 ```
+
+### Select a RoomOS product
+
+Set `Status.SystemUnit.ProductPlatform` to a public product name when a test should enforce product-specific xAPI availability. Once set to a known product, the mock rejects xAPI paths that are not available on that product and validates product-specific configuration values.
+
+```js
+import { expect, it } from "@jest/globals";
+
+it("handles Desk Pro xAPI differences", async () => {
+  const { default: xapi } = await import("xapi");
+
+  xapi.Status.SystemUnit.ProductPlatform.set("Desk Pro");
+
+  xapi.Config.Video.Output.Connector[1].MonitorRole.set("Auto");
+
+  await expect(
+    xapi.Config.Video.Output.Connector[3].MonitorRole.set("Auto"),
+  ).rejects.toEqual({
+    code: -32602,
+    message: "No match on Path argument",
+  });
+
+  await expect(
+    xapi.Config.Video.Output.Connector[1].MonitorRole.set("PresentationOnly"),
+  ).rejects.toEqual({
+    code: -32602,
+    message: "Bad usage: Missing or invalid parameter(s).",
+  });
+});
+```
+
+If no known product platform has been set, the mock keeps the broad schema-backed behavior and does not apply product-specific filtering.
 
 ### Read full status or config branches
 
@@ -325,7 +371,7 @@ it("emits a ghost payload when a call ends", async () => {
 
 ## Demo
 
-For a complete working example, see the [speed-dial-macro demo](./examples/speed-dial-macro/README.md).
+For complete examples, see the [speed-dial-macro demo](./examples/speed-dial-macro/README.md), the [self-deactivating-macro demo](./examples/self-deactivating-macro/README.md), and the [monitor-role-changer demo](./examples/monitor-role-changer/README.md).
 
 *For more demos & PoCs like this, check out our [Webex Labs site](https://collabtoolbox.cisco.com/webex-labs).
 

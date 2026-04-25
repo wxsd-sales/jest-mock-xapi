@@ -1,0 +1,21 @@
+{
+  "name": "self-deactivating-macro-example",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "NODE_OPTIONS=--experimental-vm-modules jest --runInBand",
+    "test:watch": "NODE_OPTIONS=--experimental-vm-modules jest --watchAll --runInBand"
+  },
+  "devDependencies": {
+    "@jest/globals": "^30.3.0",
+    "jest": "^30.3.0",
+    "jest-mock-xapi": "^1.0.3"
+  },
+  "jest": {
+    "rootDir": ".",
+    "testEnvironment": "node",
+    "moduleNameMapper": {
+      "^xapi$": "jest-mock-xapi"
+    }
+  }
+}

@@ -12,6 +12,11 @@ interface SchemaParameterValueSpace {
   type?: string;
 }
 
+interface SchemaValueAttributes {
+  default?: unknown;
+  valuespace?: SchemaParameterValueSpace;
+}
+
 interface SchemaParameter {
   name: string;
   required?: boolean;
@@ -19,11 +24,11 @@ interface SchemaParameter {
 }
 
 interface SchemaObject {
-  attributes?: {
-    default?: unknown;
+  attributes?: SchemaValueAttributes & {
     params?: SchemaParameter[];
   };
   path: string;
+  products?: string[];
   type: SchemaDomain;
 }
 
@@ -31,11 +36,14 @@ interface SchemaDocument {
   objects: SchemaObject[];
 }
 
-interface IndexedChild {
+interface IndexedConstraint {
   allowedValues: Set<string>;
-  node: SchemaNode;
   ranges: Array<{ max: number; min: number }>;
   wildcard: boolean;
+}
+
+interface IndexedChild extends IndexedConstraint {
+  node: SchemaNode;
 }
 
 export interface SchemaNode {
@@ -44,16 +52,39 @@ export interface SchemaNode {
   terminal: boolean;
 }
 
+export type PathPatternSegment =
+  | { type: "literal"; value: string }
+  | { type: "index"; allowedValues: Set<string>; ranges: Array<{ max: number; min: number }>; wildcard: boolean };
+
+export interface ProductPathPattern {
+  path: PathPatternSegment[];
+  products: Set<string>;
+}
+
 export interface CommandParameterSignature {
   name: string;
   required: boolean;
   valuespace?: SchemaParameterValueSpace;
 }
 
+export interface ProductScopedCommandSignature {
+  parameters: CommandParameterSignature[];
+  products: Set<string>;
+}
+
+export interface ProductScopedValue {
+  path: PathPatternSegment[];
+  products: Set<string>;
+  valuespace?: SchemaParameterValueSpace;
+}
+
 export interface SchemaModel {
-  commandSignatures: Map<string, CommandParameterSignature[][]>;
+  commandSignatures: Map<string, ProductScopedCommandSignature[]>;
+  configValues: ProductScopedValue[];
   defaults: Map<string, unknown>;
+  productPaths: Map<SchemaDomain, ProductPathPattern[]>;
   roots: Record<SchemaDomain, SchemaNode>;
+  statusValues: ProductScopedValue[];
 }
 
 function createSchemaNode(): SchemaNode {
@@ -87,7 +118,7 @@ function getOrCreateIndexedChild(node: SchemaNode) {
   return node.indexedChild;
 }
 
-function addIndexedConstraint(indexedChild: IndexedChild, token: string) {
+function addIndexedConstraint(indexedChild: IndexedConstraint, token: string) {
   if (token === "n") {
     indexedChild.wildcard = true;
     return;
@@ -128,6 +159,79 @@ function addPath(root: SchemaNode, schemaPath: string) {
   }
 
   currentNode.terminal = true;
+}
+
+function createProductSet(products?: string[]) {
+  return new Set(products ?? []);
+}
+
+function parsePathPattern(schemaPath: string) {
+  const patternSegments: PathPatternSegment[] = [];
+
+  for (const segment of schemaPath.split(" ")) {
+    const indexedMatch = segment.match(/^([^\[]+)\[(.+)\]$/);
+
+    if (!indexedMatch) {
+      patternSegments.push({
+        type: "literal",
+        value: segment,
+      });
+      continue;
+    }
+
+    const baseSegment = indexedMatch[1];
+    const indexToken = indexedMatch[2];
+    if (!baseSegment || !indexToken) {
+      continue;
+    }
+
+    patternSegments.push({
+      type: "literal",
+      value: baseSegment,
+    });
+
+    const indexPattern: Extract<PathPatternSegment, { type: "index" }> = {
+      allowedValues: new Set(),
+      ranges: [],
+      type: "index",
+      wildcard: false,
+    };
+    addIndexedConstraint(indexPattern, indexToken);
+    patternSegments.push(indexPattern);
+  }
+
+  return patternSegments;
+}
+
+function addProductPathPattern(
+  productPaths: Map<SchemaDomain, ProductPathPattern[]>,
+  schemaObject: SchemaObject,
+) {
+  const patterns = productPaths.get(schemaObject.type);
+
+  if (!patterns) {
+    return;
+  }
+
+  const pathPattern = parsePathPattern(schemaObject.path);
+
+  patterns.push({
+    path: pathPattern,
+    products: createProductSet(schemaObject.products),
+  });
+}
+
+function productScopedValueFromAttributes(schemaObject: SchemaObject) {
+  const productScopedValue: ProductScopedValue = {
+    path: parsePathPattern(schemaObject.path),
+    products: createProductSet(schemaObject.products),
+  };
+
+  if (schemaObject.attributes?.valuespace) {
+    productScopedValue.valuespace = schemaObject.attributes.valuespace;
+  }
+
+  return productScopedValue;
 }
 
 export function resolveSchemaChild(node: SchemaNode, prop: string) {
@@ -177,11 +281,20 @@ export function loadSchemaModel() {
     Event: createSchemaNode(),
     Status: createSchemaNode(),
   };
-  const commandSignatures = new Map<string, CommandParameterSignature[][]>();
+  const commandSignatures = new Map<string, ProductScopedCommandSignature[]>();
+  const configValues: ProductScopedValue[] = [];
   const defaults = new Map<string, unknown>();
+  const productPaths: Map<SchemaDomain, ProductPathPattern[]> = new Map([
+    ["Command", []],
+    ["Configuration", []],
+    ["Event", []],
+    ["Status", []],
+  ]);
+  const statusValues: ProductScopedValue[] = [];
 
   for (const schemaObject of schema.objects) {
     addPath(roots[schemaObject.type], schemaObject.path);
+    addProductPathPattern(productPaths, schemaObject);
 
     if (schemaObject.type === "Command") {
       const commandPath = ["Command", ...schemaObject.path.split(" ")].join(".");
@@ -199,8 +312,19 @@ export function loadSchemaModel() {
         return commandParameter;
       });
 
-      signatures.push(params);
+      signatures.push({
+        parameters: params,
+        products: createProductSet(schemaObject.products),
+      });
       commandSignatures.set(commandPath, signatures);
+    }
+
+    if (schemaObject.type === "Configuration") {
+      configValues.push(productScopedValueFromAttributes(schemaObject));
+    }
+
+    if (schemaObject.type === "Status") {
+      statusValues.push(productScopedValueFromAttributes(schemaObject));
     }
 
     if (schemaObject.type !== "Configuration") {
@@ -217,7 +341,10 @@ export function loadSchemaModel() {
 
   return {
     commandSignatures,
+    configValues,
     defaults,
+    productPaths,
     roots,
+    statusValues,
   } satisfies SchemaModel;
 }

@@ -872,6 +872,7 @@ pyrightconfig.json
 **/*.back.*
 
 node_modules
+examples/*/package-lock.json
 
 *.sublime*
 

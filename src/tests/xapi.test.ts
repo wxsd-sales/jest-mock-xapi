@@ -1,4 +1,4 @@
-import { describe, expect, it, jest } from "@jest/globals";
+import { afterEach, describe, expect, it, jest } from "@jest/globals";
 import xapi from "../xapi.ts";
 
 describe("xAPI Testing", () => {
@@ -253,6 +253,21 @@ describe("Command paths", () => {
   });
 });
 
+describe("RoomOS macro runtime globals", () => {
+  it("defines _main_module_name and returns the calling macro name without the source extension", async () => {
+    jest.clearAllMocks();
+
+    const macroModule = await import("./fixtures/self-deactivating-macro.js") as {
+      macroName: string;
+    };
+
+    expect(macroModule.macroName).toBe("self-deactivating-macro");
+    expect(xapi.Command.Macros.Macro.Deactivate).toHaveBeenCalledWith({
+      Name: "self-deactivating-macro",
+    });
+  });
+});
+
 describe("Event paths", () => {
   it("supports schema-backed event subscriptions and emits", () => {
     const handler = jest.fn();
@@ -295,6 +310,57 @@ describe("Invalid paths", () => {
 
   it("rejects lowercase invalid command paths with a method-not-found payload", async () => {
     await expect(xapi.Command.invalid()).rejects.toEqual({
+      code: -32601,
+      message: "Method not found.",
+    });
+  });
+});
+
+describe("Product-specific xAPI availability", () => {
+  afterEach(() => {
+    xapi.removeStatus("SystemUnit.ProductPlatform");
+  });
+
+  it("uses Status.SystemUnit.ProductPlatform as the active product selection", async () => {
+    xapi.Status.SystemUnit.ProductPlatform.set("Desk Pro");
+
+    expect(await xapi.Status.SystemUnit.ProductPlatform.get()).toBe("Desk Pro");
+  });
+
+  it("allows product-supported configuration paths and values", () => {
+    xapi.Status.SystemUnit.ProductPlatform.set("Desk Pro");
+
+    expect(
+      xapi.Config.Video.Output.Connector[1].MonitorRole.set("Auto"),
+    ).toBe("Auto");
+  });
+
+  it("rejects configuration paths that are unavailable on the selected product", async () => {
+    xapi.Status.SystemUnit.ProductPlatform.set("Desk Pro");
+
+    await expect(
+      xapi.Config.Video.Output.Connector[3].MonitorRole.set("Auto"),
+    ).rejects.toEqual({
+      code: -32602,
+      message: "No match on Path argument",
+    });
+  });
+
+  it("rejects configuration values that are unavailable on the selected product", async () => {
+    xapi.Status.SystemUnit.ProductPlatform.set("Desk Pro");
+
+    await expect(
+      xapi.Config.Video.Output.Connector[1].MonitorRole.set("PresentationOnly"),
+    ).rejects.toEqual({
+      code: -32602,
+      message: "Bad usage: Missing or invalid parameter(s).",
+    });
+  });
+
+  it("rejects command paths that are unavailable on the selected product", async () => {
+    xapi.Status.SystemUnit.ProductPlatform.set("Desk Pro");
+
+    await expect(xapi.Command.Audio.Equalizer.List()).rejects.toEqual({
       code: -32601,
       message: "Method not found.",
     });

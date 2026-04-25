@@ -1,9 +1,14 @@
 import { EventEmitter } from "events";
+import "./runtime.ts";
 import {
+  getProductCodes,
   loadSchemaModel,
   proxy,
   logger,
   resolveSchemaChild,
+  type PathPatternSegment,
+  type ProductScopedValue,
+  type SchemaDomain,
   type SchemaNode,
 } from "./utils/index.ts";
 
@@ -35,6 +40,10 @@ class MockXapi extends EventEmitter {
       callable: false,
       invalidError: invalidCommandError,
       invoke: ({ args, path }) => {
+        if (!this.#pathSupportsActiveProduct(path, true)) {
+          return Promise.reject(invalidCommandError);
+        }
+
         const commandValidationError = this.#validateCommandArguments(path, args[0]);
 
         if (commandValidationError) {
@@ -51,6 +60,13 @@ class MockXapi extends EventEmitter {
       allowedMethods: ["get", "set", "on"],
       invalidError: invalidPathError,
       invoke: ({ args, node, operation, path }) => {
+        const requiresExactProductPath = operation === "set";
+        const pathSegments = this.#getPathSegments(path);
+
+        if (!this.#pathSupportsActiveProduct(pathSegments, requiresExactProductPath)) {
+          return Promise.reject(invalidPathError);
+        }
+
         if (operation === "get") {
           return this.#getMaterializedStoreValue(this.#configStore, node, path);
         }
@@ -58,6 +74,12 @@ class MockXapi extends EventEmitter {
         const storeKey = this.#getStoreKey(path);
 
         if (operation === "set") {
+          const validationError = this.#validatePathValue("Config", pathSegments, args[0]);
+
+          if (validationError) {
+            return Promise.reject(validationError);
+          }
+
           this.#configStore.set(storeKey, args[0]);
           this.#emitStoreChange("Config", this.#configStore, path, args[0]);
           return args[0];
@@ -77,6 +99,13 @@ class MockXapi extends EventEmitter {
       allowedMethods: ["get", "on", "set"],
       invalidError: invalidPathError,
       invoke: ({ args, node, operation, path }) => {
+        const requiresExactProductPath = operation === "set";
+        const pathSegments = this.#getPathSegments(path);
+
+        if (!this.#pathSupportsActiveProduct(pathSegments, requiresExactProductPath)) {
+          return Promise.reject(invalidPathError);
+        }
+
         if (operation === "get") {
           return this.#getMaterializedStoreValue(this.#statusStore, node, path);
         }
@@ -88,6 +117,12 @@ class MockXapi extends EventEmitter {
         }
 
         if (operation === "set") {
+          const validationError = this.#validatePathValue("Status", pathSegments, args[0]);
+
+          if (validationError) {
+            return Promise.reject(validationError);
+          }
+
           this.#statusStore.set(storeKey, args[0]);
           this.#emitStoreChange("Status", this.#statusStore, path, args[0]);
           return args[0];
@@ -102,6 +137,13 @@ class MockXapi extends EventEmitter {
     this.Event = proxy({
       allowedMethods: ["emit", "on"],
       invoke: ({ args, operation, path }) => {
+        const requiresExactProductPath = operation === "emit";
+        const pathSegments = this.#getPathSegments(path);
+
+        if (!this.#pathSupportsActiveProduct(pathSegments, requiresExactProductPath)) {
+          return Promise.reject(invalidPathError);
+        }
+
         const eventKey = this.#getStoreKey(path);
 
         if (operation === "on") {
@@ -126,6 +168,164 @@ class MockXapi extends EventEmitter {
 
   #getPathSegments(path: string[]) {
     return path.slice(0, -1);
+  }
+
+  #getActiveProductCodes() {
+    const productPlatform = this.#statusStore.get("Status.SystemUnit.ProductPlatform");
+
+    if (typeof productPlatform !== "string") {
+      return [];
+    }
+
+    return getProductCodes(productPlatform);
+  }
+
+  #getSchemaDomain(pathRoot: string): SchemaDomain {
+    if (pathRoot === "Config") {
+      return "Configuration";
+    }
+
+    if (pathRoot === "Status") {
+      return "Status";
+    }
+
+    if (pathRoot === "Command") {
+      return "Command";
+    }
+
+    return "Event";
+  }
+
+  #productsIncludeActiveProduct(products: Set<string>, activeProductCodes: string[]) {
+    if (activeProductCodes.length === 0 || products.size === 0) {
+      return true;
+    }
+
+    return activeProductCodes.some((productCode) => products.has(productCode));
+  }
+
+  #patternSegmentMatches(
+    patternSegment: PathPatternSegment,
+    querySegment: string,
+  ) {
+    if (patternSegment.type === "literal") {
+      return patternSegment.value === querySegment;
+    }
+
+    if (querySegment === "*") {
+      return true;
+    }
+
+    if (patternSegment.wildcard || patternSegment.allowedValues.has(querySegment)) {
+      return true;
+    }
+
+    const numericValue = Number(querySegment);
+    if (Number.isNaN(numericValue)) {
+      return false;
+    }
+
+    return patternSegment.ranges.some(
+      (range) => numericValue >= range.min && numericValue <= range.max,
+    );
+  }
+
+  #pathPatternMatches(
+    patternPath: PathPatternSegment[],
+    querySegments: string[],
+    requiresExactPath: boolean,
+  ) {
+    if (requiresExactPath && querySegments.length !== patternPath.length) {
+      return false;
+    }
+
+    if (querySegments.length > patternPath.length) {
+      return false;
+    }
+
+    return querySegments.every((querySegment, index) => {
+      const patternSegment = patternPath[index];
+      if (!patternSegment) {
+        return false;
+      }
+
+      return this.#patternSegmentMatches(patternSegment, querySegment);
+    });
+  }
+
+  #pathSupportsActiveProduct(pathSegments: string[], requiresExactPath: boolean) {
+    const activeProductCodes = this.#getActiveProductCodes();
+
+    if (activeProductCodes.length === 0) {
+      return true;
+    }
+
+    const [rootSegment, ...querySegments] = pathSegments;
+
+    if (typeof rootSegment !== "string") {
+      return false;
+    }
+
+    const schemaDomain = this.#getSchemaDomain(rootSegment);
+    const productPathPatterns = schemaModel.productPaths.get(schemaDomain) ?? [];
+
+    return productPathPatterns.some((productPathPattern) =>
+      this.#productsIncludeActiveProduct(
+        productPathPattern.products,
+        activeProductCodes,
+      ) &&
+      this.#pathPatternMatches(
+        productPathPattern.path,
+        querySegments,
+        requiresExactPath,
+      ),
+    );
+  }
+
+  #storeKeySupportsActiveProduct(storeKey: string) {
+    return this.#pathSupportsActiveProduct(storeKey.split("."), true);
+  }
+
+  #pathValuesForActiveProduct(
+    values: ProductScopedValue[],
+    pathSegments: string[],
+  ) {
+    const activeProductCodes = this.#getActiveProductCodes();
+    const querySegments = pathSegments.slice(1);
+
+    return values.filter(
+      (productScopedValue) =>
+        this.#productsIncludeActiveProduct(
+          productScopedValue.products,
+          activeProductCodes,
+        ) &&
+        this.#pathPatternMatches(productScopedValue.path, querySegments, true),
+    );
+  }
+
+  #validatePathValue(
+    pathRoot: "Config" | "Status",
+    pathSegments: string[],
+    value: unknown,
+  ) {
+    if (this.#getActiveProductCodes().length === 0) {
+      return null;
+    }
+
+    const productScopedValues = this.#pathValuesForActiveProduct(
+      pathRoot === "Config" ? schemaModel.configValues : schemaModel.statusValues,
+      pathSegments,
+    );
+
+    if (productScopedValues.length === 0) {
+      return invalidPathError;
+    }
+
+    const valueMatches = productScopedValues.some((productScopedValue) =>
+      this.#matchesParameterValue(productScopedValue.valuespace, value),
+    );
+
+    return valueMatches ? null : missingOrInvalidCommandParametersError;
   }
 
   #getSchemaRoot(pathRoot: string) {
@@ -340,7 +540,11 @@ class MockXapi extends EventEmitter {
     const querySegments = this.#getPathSegments(path);
     const exactStoreKey = querySegments.join(".");
 
-    if (!querySegments.includes("*") && store.has(exactStoreKey)) {
+    if (
+      !querySegments.includes("*") &&
+      store.has(exactStoreKey) &&
+      this.#storeKeySupportsActiveProduct(exactStoreKey)
+    ) {
       return store.get(exactStoreKey);
     }
 
@@ -351,6 +555,10 @@ class MockXapi extends EventEmitter {
     let matchCount = 0;
 
     for (const [storeKey, storeValue] of store.entries()) {
+      if (!this.#storeKeySupportsActiveProduct(storeKey)) {
+        continue;
+      }
+
       const storeSegments = storeKey.split(".");
       let projectedSegments: string[] | null = null;
 
@@ -677,14 +885,25 @@ class MockXapi extends EventEmitter {
       return missingOrInvalidCommandParametersError;
     }
 
+    const activeProductCodes = this.#getActiveProductCodes();
+    const activeSignatures = activeProductCodes.length === 0
+      ? signatures
+      : signatures.filter((signature) =>
+          this.#productsIncludeActiveProduct(signature.products, activeProductCodes),
+        );
+
+    if (activeSignatures.length === 0) {
+      return null;
+    }
+
     const parameterRecord = parameters as Record<string, unknown>;
     let firstBadParameterName: string | null = null;
 
-    for (const signature of signatures) {
+    for (const signature of activeSignatures) {
       let signatureIsValid = true;
       let signatureHasMissingRequiredParameter = false;
 
-      for (const parameter of signature) {
+      for (const parameter of signature.parameters) {
         const hasParameter = Object.hasOwn(parameterRecord, parameter.name);
 
         if (!hasParameter) {
