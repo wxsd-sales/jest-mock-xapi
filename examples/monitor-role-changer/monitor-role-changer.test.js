@@ -76,7 +76,7 @@ describe("monitor-role-changer", () => {
     const xapi = await loadMacroForProduct("Desk Pro");
 
     xapi.Event.UserInterface.Extensions.Widget.Action.emit({
-      WidgetId: "monitor-role-output-2",
+      WidgetId: "monitor-role-changer-2",
       Value: "Second",
     });
 

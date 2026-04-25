@@ -126,7 +126,7 @@ async function main() {
 
   xapi.Event.UserInterface.Extensions.Widget.Action.on(
     ({ WidgetId, Value }) => {
-      if (!WidgetId.startsWith(panelId)) return;
+      if (typeof WidgetId !== "string" || !WidgetId.startsWith(panelId)) return;
       const connectorId = parseMonitorRoleWidgetId(WidgetId);
 
       if (
