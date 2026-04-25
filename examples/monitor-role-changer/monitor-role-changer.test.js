@@ -45,7 +45,7 @@ describe("monitor-role-changer", () => {
     expect(
       xapi.Command.UserInterface.Extensions.Panel.Save,
     ).toHaveBeenCalledWith(
-      { PanelId: "monitor-role-changer-panel" },
+      { PanelId: "monitor-role-changer" },
       expect.any(String),
     );
     expect(panel).toContain("<Name>Output 1</Name>");
@@ -76,7 +76,7 @@ describe("monitor-role-changer", () => {
     const xapi = await loadMacroForProduct("Desk Pro");
 
     xapi.Event.UserInterface.Extensions.Widget.Action.emit({
-      WidgetId: "monitor_role_output_2",
+      WidgetId: "monitor-role-output-2",
       Value: "Second",
     });
 

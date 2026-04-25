@@ -18,8 +18,6 @@ Create a new folder for your macro project, copy these files into it, then run:
 npm install
 ```
 
-This example expects `jest-mock-xapi@1.0.3` or later to be available from npm as a normal dev dependency.
-
 ## Run Tests
 
 Run your tests once with:
