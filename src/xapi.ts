@@ -286,6 +286,25 @@ class MockXapi extends EventEmitter {
     return this.#pathSupportsActiveProduct(storeKey.split("."), true);
   }
 
+  #getProductDefaultStoreEntries(activeProductCodes: string[]) {
+    if (activeProductCodes.length === 0) {
+      return [];
+    }
+
+    return schemaModel.productDefaults
+      .filter((productDefault) =>
+        this.#productsIncludeActiveProduct(
+          productDefault.products,
+          activeProductCodes,
+        ),
+      )
+      .map((productDefault) => ({
+        storeKey: ["Config", ...productDefault.path].join("."),
+        storeValue: productDefault.value,
+        skipProductSupportCheck: true,
+      }));
+  }
+
   #pathValuesForActiveProduct(
     values: ProductScopedValue[],
     pathSegments: string[],
@@ -553,9 +572,22 @@ class MockXapi extends EventEmitter {
     );
     const materializedResult: Record<string | symbol, unknown> = {};
     let matchCount = 0;
+    const activeProductCodes = this.#getActiveProductCodes();
+    const storeEntries = [...store.entries()].map(([storeKey, storeValue]) => ({
+      skipProductSupportCheck: false,
+      storeKey,
+      storeValue,
+    }));
+    const materializableEntries =
+      store === this.#configStore
+        ? [
+            ...this.#getProductDefaultStoreEntries(activeProductCodes),
+            ...storeEntries,
+          ]
+        : storeEntries;
 
-    for (const [storeKey, storeValue] of store.entries()) {
-      if (!this.#storeKeySupportsActiveProduct(storeKey)) {
+    for (const { skipProductSupportCheck, storeKey, storeValue } of materializableEntries) {
+      if (!skipProductSupportCheck && !this.#storeKeySupportsActiveProduct(storeKey)) {
         continue;
       }
 

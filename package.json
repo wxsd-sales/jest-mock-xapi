@@ -1,6 +1,6 @@
 {
   "name": "jest-mock-xapi",
-  "version": "1.0.3",
+  "version": "1.0.4",
   "description": "A jest mock xAPI module validating and testing Cisco Collaboration Device macros",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",

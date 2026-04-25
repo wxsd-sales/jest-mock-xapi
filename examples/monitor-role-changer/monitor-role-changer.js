@@ -108,6 +108,7 @@ async function main() {
   const productName =
     typeof productPlatform === "string" ? productPlatform : "";
   const outputs = await xapi.Config.Video.Output.Connector.get();
+
   const connectors = discoverMonitorRoleConnectors(outputs);
 
   if (connectors.length === 0) {

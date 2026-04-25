@@ -78,10 +78,17 @@ export interface ProductScopedValue {
   valuespace?: SchemaParameterValueSpace;
 }
 
+export interface ProductScopedDefaultValue {
+  path: string[];
+  products: Set<string>;
+  value: unknown;
+}
+
 export interface SchemaModel {
   commandSignatures: Map<string, ProductScopedCommandSignature[]>;
   configValues: ProductScopedValue[];
   defaults: Map<string, unknown>;
+  productDefaults: ProductScopedDefaultValue[];
   productPaths: Map<SchemaDomain, ProductPathPattern[]>;
   roots: Record<SchemaDomain, SchemaNode>;
   statusValues: ProductScopedValue[];
@@ -203,6 +210,57 @@ function parsePathPattern(schemaPath: string) {
   return patternSegments;
 }
 
+function expandIndexToken(indexToken: string) {
+  const rangeMatch = indexToken.match(/^(\d+)\.\.(\d+)$/);
+
+  if (!rangeMatch) {
+    return [indexToken];
+  }
+
+  const min = Number(rangeMatch[1]);
+  const max = Number(rangeMatch[2]);
+  const expandedTokens: string[] = [];
+
+  for (let value = min; value <= max; value += 1) {
+    expandedTokens.push(String(value));
+  }
+
+  return expandedTokens;
+}
+
+function expandSchemaPath(schemaPath: string) {
+  let expandedPaths: string[][] = [[]];
+
+  for (const segment of schemaPath.split(" ")) {
+    const indexedMatch = segment.match(/^([^\[]+)\[(.+)\]$/);
+
+    if (!indexedMatch) {
+      expandedPaths = expandedPaths.map((pathSegments) => [
+        ...pathSegments,
+        segment,
+      ]);
+      continue;
+    }
+
+    const baseSegment = indexedMatch[1];
+    const indexToken = indexedMatch[2];
+    if (!baseSegment || !indexToken) {
+      continue;
+    }
+
+    const indexValues = expandIndexToken(indexToken);
+    expandedPaths = expandedPaths.flatMap((pathSegments) =>
+      indexValues.map((indexValue) => [
+        ...pathSegments,
+        baseSegment,
+        indexValue,
+      ]),
+    );
+  }
+
+  return expandedPaths;
+}
+
 function addProductPathPattern(
   productPaths: Map<SchemaDomain, ProductPathPattern[]>,
   schemaObject: SchemaObject,
@@ -284,6 +342,7 @@ export function loadSchemaModel() {
   const commandSignatures = new Map<string, ProductScopedCommandSignature[]>();
   const configValues: ProductScopedValue[] = [];
   const defaults = new Map<string, unknown>();
+  const productDefaults: ProductScopedDefaultValue[] = [];
   const productPaths: Map<SchemaDomain, ProductPathPattern[]> = new Map([
     ["Command", []],
     ["Configuration", []],
@@ -337,12 +396,21 @@ export function loadSchemaModel() {
 
     const defaultPath = ["Config", ...schemaObject.path.split(" ")].join(".");
     defaults.set(defaultPath, schemaObject.attributes.default);
+
+    for (const expandedPath of expandSchemaPath(schemaObject.path)) {
+      productDefaults.push({
+        path: expandedPath,
+        products: createProductSet(schemaObject.products),
+        value: schemaObject.attributes.default,
+      });
+    }
   }
 
   return {
     commandSignatures,
     configValues,
     defaults,
+    productDefaults,
     productPaths,
     roots,
     statusValues,

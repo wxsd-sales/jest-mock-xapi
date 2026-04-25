@@ -1,4 +1,11 @@
-import { afterEach, beforeEach, describe, expect, it, jest } from "@jest/globals";
+import {
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  jest,
+} from "@jest/globals";
 
 async function loadMacroForProduct(productName) {
   const { default: xapi } = await import("xapi");
@@ -13,7 +20,9 @@ async function loadMacroForProduct(productName) {
 }
 
 function getSavedPanel(xapi) {
-  return xapi.Command.UserInterface.Extensions.Panel.Save.mock.calls[0]?.[1] ?? "";
+  return (
+    xapi.Command.UserInterface.Extensions.Panel.Save.mock.calls[0]?.[1] ?? ""
+  );
 }
 
 describe("monitor-role-changer", () => {
@@ -23,6 +32,12 @@ describe("monitor-role-changer", () => {
 
   afterEach(() => {
     jest.restoreAllMocks();
+  });
+
+  it("returns the Desk Pro output connector defaults used by the macro", async () => {
+    const xapi = await loadMacroForProduct("Desk Pro");
+
+    expect(xapi.Config.Video.Output.Connector.get()).toHaveLength(2);
   });
 
   it("does not save a panel on Desk because no outputs expose MonitorRole", async () => {

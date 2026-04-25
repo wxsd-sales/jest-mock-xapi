@@ -357,6 +357,60 @@ describe("Product-specific xAPI availability", () => {
     });
   });
 
+  it("returns product-supported indexed configuration defaults for aggregate getters", () => {
+    xapi.Status.SystemUnit.ProductPlatform.set("Desk Pro");
+
+    const outputs = xapi.Config.Video.Output.Connector.get();
+
+    expect(outputs).toHaveLength(2);
+    expect(outputs).toEqual([
+      expect.objectContaining({
+        MonitorRole: expect.any(String),
+      }),
+      expect.objectContaining({
+        MonitorRole: expect.any(String),
+      }),
+    ]);
+  });
+
+  it("prefers stored configuration values over product-supported defaults", () => {
+    xapi.Status.SystemUnit.ProductPlatform.set("Desk Pro");
+
+    xapi.Config.Video.Output.Connector[1].MonitorRole.set("First");
+
+    expect(xapi.Config.Video.Output.Connector[1].MonitorRole.get()).toBe("First");
+    expect(xapi.Config.Video.Output.Connector.get()).toEqual([
+      expect.objectContaining({
+        MonitorRole: "First",
+      }),
+      expect.objectContaining({
+        MonitorRole: expect.any(String),
+      }),
+    ]);
+  });
+
+  it("filters indexed configuration defaults to the selected product", () => {
+    xapi.Status.SystemUnit.ProductPlatform.set("Codec Pro");
+
+    const codecProOutputs = xapi.Config.Video.Output.Connector.get();
+
+    expect(codecProOutputs).toHaveLength(3);
+    expect(
+      codecProOutputs.every((output: Record<string, unknown>) =>
+        Object.hasOwn(output, "MonitorRole"),
+      ),
+    ).toBe(true);
+
+    xapi.Status.SystemUnit.ProductPlatform.set("Desk");
+
+    const deskOutputs = xapi.Config.Video.Output.Connector.get();
+    const deskOutputsWithMonitorRole = deskOutputs.filter(
+      (output: Record<string, unknown>) => Object.hasOwn(output, "MonitorRole"),
+    );
+
+    expect(deskOutputsWithMonitorRole).toHaveLength(0);
+  });
+
   it("rejects command paths that are unavailable on the selected product", async () => {
     xapi.Status.SystemUnit.ProductPlatform.set("Desk Pro");
 
