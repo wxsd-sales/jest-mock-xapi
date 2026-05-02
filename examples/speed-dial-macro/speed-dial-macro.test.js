@@ -7,8 +7,7 @@ describe("speed-dial-macro", () => {
 
   it("saves the speed dial panel when the macro loads", async () => {
     const { default: xapi } = await import("xapi");
-    jest.clearAllMocks();
-    xapi.removeAllListeners();
+    xapi.reset();
     await import("./speed-dial-macro.js");
 
     expect(
@@ -24,8 +23,7 @@ describe("speed-dial-macro", () => {
 
   it("dials the configured number when the matching panel is clicked", async () => {
     const { default: xapi } = await import("xapi");
-    jest.clearAllMocks();
-    xapi.removeAllListeners();
+    xapi.reset();
     await import("./speed-dial-macro.js");
 
     xapi.Event.UserInterface.Extensions.Panel.Clicked.emit({
@@ -40,8 +38,7 @@ describe("speed-dial-macro", () => {
 
   it("ignores unrelated panel click events", async () => {
     const { default: xapi } = await import("xapi");
-    jest.clearAllMocks();
-    xapi.removeAllListeners();
+    xapi.reset();
     await import("./speed-dial-macro.js");
 
     xapi.Event.UserInterface.Extensions.Panel.Clicked.emit({

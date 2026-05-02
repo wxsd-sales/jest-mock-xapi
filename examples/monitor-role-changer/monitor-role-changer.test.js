@@ -10,8 +10,7 @@ import {
 async function loadMacroForProduct(productName) {
   const { default: xapi } = await import("xapi");
 
-  jest.clearAllMocks();
-  xapi.removeAllListeners();
+  xapi.reset();
   xapi.Status.SystemUnit.ProductPlatform.set(productName);
 
   await import("./monitor-role-changer.js");
@@ -37,7 +36,7 @@ describe("monitor-role-changer", () => {
   it("returns the Desk Pro output connector defaults used by the macro", async () => {
     const xapi = await loadMacroForProduct("Desk Pro");
 
-    expect(xapi.Config.Video.Output.Connector.get()).toHaveLength(2);
+    await expect(xapi.Config.Video.Output.Connector.get()).resolves.toHaveLength(2);
   });
 
   it("does not save a panel on Desk because no outputs expose MonitorRole", async () => {

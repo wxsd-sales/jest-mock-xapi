@@ -1,6 +1,6 @@
 {
   "name": "jest-mock-xapi",
-  "version": "1.0.4",
+  "version": "1.0.5",
   "description": "A jest mock xAPI module validating and testing Cisco Collaboration Device macros",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -20,11 +20,14 @@
     "README.md"
   ],
   "scripts": {
-    "dev": "tsx watch src/index.ts",
-    "build": "tsc -p tsconfig.build.json && node scripts/copy-schemas.mjs",
-    "prepublishOnly": "npm run build && npm test",
-    "test": "NODE_OPTIONS=--experimental-vm-modules jest",
-    "test:watch": "NODE_OPTIONS=--experimental-vm-modules jest --watchAll"
+    "dev": "npm run schema:ensure && tsx watch src/index.ts",
+    "schema:ensure": "node --import tsx scripts/ensure-schema.ts",
+    "schema:update": "node --import tsx scripts/update-schema.ts",
+    "build": "npm run schema:ensure && tsc -p tsconfig.build.json && node --import tsx scripts/copy-schemas.ts",
+    "parity:devices": "npm run build && NODE_OPTIONS=--experimental-vm-modules jest --runInBand --testMatch '**/scripts/xapi-device-parity.ts'",
+    "prepublishOnly": "npm run schema:update && npm run build && npm test",
+    "test": "npm run schema:ensure && NODE_OPTIONS=--experimental-vm-modules jest",
+    "test:watch": "npm run schema:ensure && NODE_OPTIONS=--experimental-vm-modules jest --watchAll"
   },
   "repository": {
     "type": "git",
@@ -49,9 +52,11 @@
     "@types/jest": "^30.0.0",
     "@types/node": "^25.5.2",
     "jest": "^30.3.0",
+    "jsxapi": "^6.0.0",
     "nodemon": "^3.1.14",
     "ts-jest": "^29.4.9",
     "ts-node": "^10.9.2",
+    "tsx": "^4.21.0",
     "typescript": "^6.0.2"
   },
   "peerDependencies": {

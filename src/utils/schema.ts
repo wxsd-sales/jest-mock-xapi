@@ -88,10 +88,27 @@ export interface SchemaModel {
   commandSignatures: Map<string, ProductScopedCommandSignature[]>;
   configValues: ProductScopedValue[];
   defaults: Map<string, unknown>;
+  docs: Map<string, unknown>;
+  majorVersion: number;
+  name: string;
+  productCodes: Set<string>;
   productDefaults: ProductScopedDefaultValue[];
   productPaths: Map<SchemaDomain, ProductPathPattern[]>;
   roots: Record<SchemaDomain, SchemaNode>;
   statusValues: ProductScopedValue[];
+}
+
+export interface SchemaCatalogEntry {
+  majorVersion: number;
+  model: SchemaModel;
+  name: string;
+}
+
+export interface SchemaCatalog {
+  defaultModel: SchemaModel;
+  getModelForProductCodes(productCodes: string[]): SchemaModel;
+  models: SchemaCatalogEntry[];
+  roots: Record<SchemaDomain, SchemaNode>;
 }
 
 function createSchemaNode(): SchemaNode {
@@ -261,6 +278,169 @@ function expandSchemaPath(schemaPath: string) {
   return expandedPaths;
 }
 
+function createDocValueSpace(
+  valuespace?: SchemaParameterValueSpace,
+  defaultValue?: unknown,
+) {
+  if (!valuespace) {
+    return undefined;
+  }
+
+  const docValueSpace: Record<string, unknown> = {};
+
+  if (typeof defaultValue !== "undefined") {
+    docValueSpace.default = defaultValue;
+  }
+
+  if (valuespace.Values) {
+    docValueSpace.Value = valuespace.Values;
+  }
+
+  if (valuespace.Max) {
+    docValueSpace.max = valuespace.Max;
+  }
+
+  if (valuespace.MaxLength) {
+    docValueSpace.maxLength = valuespace.MaxLength;
+  }
+
+  if (valuespace.Min) {
+    docValueSpace.min = valuespace.Min;
+  }
+
+  if (valuespace.MinLength) {
+    docValueSpace.minLength = valuespace.MinLength;
+  }
+
+  if (valuespace.type) {
+    docValueSpace.type = valuespace.type;
+  }
+
+  return docValueSpace;
+}
+
+function createCommandParameterDoc(parameter: SchemaParameter) {
+  const parameterDoc: Record<string, unknown> = {
+    id: "1",
+    required: parameter.required ? "True" : "False",
+  };
+
+  const valueSpace = createDocValueSpace(parameter.valuespace);
+
+  if (valueSpace) {
+    parameterDoc.ValueSpace = valueSpace;
+  }
+
+  return parameterDoc;
+}
+
+function createCommandDocResult(schemaObject: SchemaObject) {
+  const docResult: Record<string, unknown> = {
+    access: "public-api",
+    command: "True",
+    description: "",
+    privacyimpact: "False",
+    role: "Admin;Integrator;RoomControl",
+  };
+
+  for (const parameter of schemaObject.attributes?.params ?? []) {
+    docResult[parameter.name] = createCommandParameterDoc(parameter);
+  }
+
+  return docResult;
+}
+
+function createConfigurationDocResult(schemaObject: SchemaObject) {
+  const docResult: Record<string, unknown> = {
+    access: "public-api",
+    description: "",
+    include_for_extension: "mtr",
+    read: "Admin;Integrator;RoomControl;User",
+    role: "Admin",
+  };
+
+  const valueSpace = createDocValueSpace(
+    schemaObject.attributes?.valuespace,
+    schemaObject.attributes?.default,
+  );
+
+  if (valueSpace) {
+    docResult.ValueSpace = valueSpace;
+  }
+
+  return docResult;
+}
+
+function createStatusDocResult(schemaObject: SchemaObject) {
+  const docResult: Record<string, unknown> = {
+    access: "public-api",
+    description: "",
+    include_for_extension: "mtr",
+    privacyimpact: "False",
+    read: "Admin;Integrator;User",
+  };
+
+  const valueSpace = createDocValueSpace(schemaObject.attributes?.valuespace);
+
+  if (valueSpace) {
+    docResult.ValueSpace = valueSpace;
+  }
+
+  return docResult;
+}
+
+function createEventDocResult(schemaObject: SchemaObject) {
+  const docResult: Record<string, unknown> = {
+    access: "public-api",
+    event: "True",
+    include_for_extension: "mtr",
+    read: "Admin;User;Integrator;RoomControl",
+  };
+
+  if (schemaObject.path === "UserInterface Extensions Widget Action") {
+    return {
+      Origin: { type: "literal" },
+      PeripheralId: { optional: "True", type: "string" },
+      Type: { type: "string" },
+      Value: { type: "string" },
+      WidgetId: { type: "string" },
+      ...docResult,
+    };
+  }
+
+  return docResult;
+}
+
+function createSchemaDocResult(schemaObject: SchemaObject) {
+  if (schemaObject.type === "Command") {
+    return createCommandDocResult(schemaObject);
+  }
+
+  if (schemaObject.type === "Configuration") {
+    return createConfigurationDocResult(schemaObject);
+  }
+
+  if (schemaObject.type === "Event") {
+    return createEventDocResult(schemaObject);
+  }
+
+  return createStatusDocResult(schemaObject);
+}
+
+function addDocResults(docs: Map<string, unknown>, schemaObject: SchemaObject) {
+  const docResult = createSchemaDocResult(schemaObject);
+
+  for (const expandedPath of expandSchemaPath(schemaObject.path)) {
+    const pathKey = expandedPath.join(".");
+
+    docs.set([schemaObject.type, pathKey].join("."), docResult);
+
+    if (schemaObject.type === "Configuration") {
+      docs.set(["Config", pathKey].join("."), docResult);
+    }
+  }
+}
+
 function addProductPathPattern(
   productPaths: Map<SchemaDomain, ProductPathPattern[]>,
   schemaObject: SchemaObject,
@@ -327,12 +507,10 @@ export function resolveSchemaChild(node: SchemaNode, prop: string) {
   return undefined;
 }
 
-export function loadSchemaModel() {
-  const schemaUrl = new URL("../schemas/26.4.1 March 2026.json", import.meta.url);
-  const schema = JSON.parse(
-    readFileSync(schemaUrl, "utf8"),
-  ) as SchemaDocument;
-
+function createSchemaModel(
+  schema: SchemaDocument,
+  metadata: { majorVersion?: number; name?: string } = {},
+) {
   const roots: Record<SchemaDomain, SchemaNode> = {
     Command: createSchemaNode(),
     Configuration: createSchemaNode(),
@@ -342,6 +520,8 @@ export function loadSchemaModel() {
   const commandSignatures = new Map<string, ProductScopedCommandSignature[]>();
   const configValues: ProductScopedValue[] = [];
   const defaults = new Map<string, unknown>();
+  const docs = new Map<string, unknown>();
+  const productCodes = new Set<string>();
   const productDefaults: ProductScopedDefaultValue[] = [];
   const productPaths: Map<SchemaDomain, ProductPathPattern[]> = new Map([
     ["Command", []],
@@ -352,7 +532,12 @@ export function loadSchemaModel() {
   const statusValues: ProductScopedValue[] = [];
 
   for (const schemaObject of schema.objects) {
+    for (const productCode of schemaObject.products ?? []) {
+      productCodes.add(productCode);
+    }
+
     addPath(roots[schemaObject.type], schemaObject.path);
+    addDocResults(docs, schemaObject);
     addProductPathPattern(productPaths, schemaObject);
 
     if (schemaObject.type === "Command") {
@@ -410,9 +595,96 @@ export function loadSchemaModel() {
     commandSignatures,
     configValues,
     defaults,
+    docs,
+    majorVersion: metadata.majorVersion ?? 0,
+    name: metadata.name ?? "schema",
+    productCodes,
     productDefaults,
     productPaths,
     roots,
     statusValues,
   } satisfies SchemaModel;
+}
+
+function compareCatalogEntries(left: SchemaCatalogEntry, right: SchemaCatalogEntry) {
+  return right.majorVersion - left.majorVersion;
+}
+
+function createSchemaCatalog(schemas: Array<{
+  majorVersion?: number;
+  name?: string;
+  schema: SchemaDocument;
+}>) {
+  const entries = schemas
+    .map((schemaEntry) => {
+      const majorVersion = schemaEntry.majorVersion ?? 0;
+      const name = schemaEntry.name ?? `RoomOS ${majorVersion}`;
+      const model = createSchemaModel(schemaEntry.schema, {
+        majorVersion,
+        name,
+      });
+
+      return {
+        majorVersion,
+        model,
+        name,
+      };
+    })
+    .sort(compareCatalogEntries);
+
+  const defaultModel = entries[0]?.model;
+
+  if (!defaultModel) {
+    throw new Error("No RoomOS schemas were bundled with jest-mock-xapi.");
+  }
+
+  const combinedModel = createSchemaModel(
+    {
+      objects: schemas.flatMap((schemaEntry) => schemaEntry.schema.objects),
+    },
+    {
+      majorVersion: defaultModel.majorVersion,
+      name: "combined",
+    },
+  );
+
+  return {
+    defaultModel,
+    getModelForProductCodes(productCodes: string[]) {
+      if (productCodes.length === 0) {
+        return defaultModel;
+      }
+
+      return (
+        entries.find((entry) =>
+          productCodes.some((productCode) => entry.model.productCodes.has(productCode)),
+        )?.model ?? defaultModel
+      );
+    },
+    models: entries,
+    roots: combinedModel.roots,
+  } satisfies SchemaCatalog;
+}
+
+export function loadSchemaModel() {
+  const schemaUrl = new URL("../schemas/schema.json", import.meta.url);
+  const schema = JSON.parse(readFileSync(schemaUrl, "utf8"));
+
+  if (Array.isArray(schema.schemas)) {
+    return createSchemaCatalog(
+      schema.schemas.map((schemaEntry: any) => ({
+        majorVersion: schemaEntry.majorVersion,
+        name: schemaEntry.name,
+        schema: schemaEntry.schema,
+      })),
+    );
+  }
+
+  return createSchemaCatalog([
+    {
+      majorVersion: 0,
+      name: "schema",
+      schema: schema as SchemaDocument,
+    },
+  ]);
 }

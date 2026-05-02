@@ -7,8 +7,7 @@ describe("self-deactivating-macro", () => {
 
   it("deactivates itself using the macro filename as the RoomOS module name", async () => {
     const { default: xapi } = await import("xapi");
-    jest.clearAllMocks();
-    xapi.removeAllListeners();
+    xapi.reset();
 
     await import("./self-deactivating-macro.js");
 

@@ -1,18 +1,39 @@
-import {
-  copyFileSync,
-  existsSync,
-  mkdirSync,
-  readFileSync,
-  readdirSync,
-  rmSync,
-  writeFileSync,
-} from "fs";
-import { join } from "path";
-import { fileURLToPath } from "url";
+type SchemaDomain = "Command" | "Configuration" | "Event" | "Status";
 
-const sourceDir = fileURLToPath(new URL("../src/schemas", import.meta.url));
-const distDir = fileURLToPath(new URL("../dist/schemas", import.meta.url));
-const valuespaceKeys = [
+interface SchemaValueSpace {
+  Max?: string;
+  MaxLength?: string;
+  Min?: string;
+  MinLength?: string;
+  Step?: string;
+  Values?: string[];
+  type?: string;
+}
+
+interface SchemaParameter {
+  name: string;
+  required?: boolean;
+  valuespace?: SchemaValueSpace;
+}
+
+interface SchemaAttributes {
+  default?: unknown;
+  params?: SchemaParameter[];
+  valuespace?: SchemaValueSpace;
+}
+
+export interface SchemaObject {
+  attributes?: SchemaAttributes;
+  path: string;
+  products?: string[];
+  type: SchemaDomain;
+}
+
+export interface SchemaDocument {
+  objects: SchemaObject[];
+}
+
+export const schemaValueSpaceKeys = [
   "Max",
   "MaxLength",
   "Min",
@@ -20,30 +41,30 @@ const valuespaceKeys = [
   "Step",
   "Values",
   "type",
-];
+] as const;
 
-function hasOwn(object, key) {
+function hasOwn(object: object, key: PropertyKey) {
   return Object.prototype.hasOwnProperty.call(object, key);
 }
 
-function keepValuespace(valuespace) {
+export function keepValuespace(valuespace?: SchemaValueSpace) {
   if (!valuespace) {
     return undefined;
   }
 
-  const kept = {};
+  const kept: Record<string, unknown> = {};
 
-  for (const key of valuespaceKeys) {
+  for (const key of schemaValueSpaceKeys) {
     if (hasOwn(valuespace, key)) {
       kept[key] = valuespace[key];
     }
   }
 
-  return Object.keys(kept).length > 0 ? kept : undefined;
+  return Object.keys(kept).length > 0 ? kept as Partial<SchemaValueSpace> : undefined;
 }
 
-function keepCommandParameter(parameter) {
-  const kept = {
+export function keepCommandParameter(parameter: SchemaParameter) {
+  const kept: SchemaParameter = {
     name: parameter.name,
   };
   const valuespace = keepValuespace(parameter.valuespace);
@@ -59,9 +80,9 @@ function keepCommandParameter(parameter) {
   return kept;
 }
 
-function keepAttributes(schemaObject) {
+export function keepAttributes(schemaObject: SchemaObject) {
   const attributes = schemaObject.attributes ?? {};
-  const kept = {};
+  const kept: SchemaAttributes = {};
 
   if (
     schemaObject.type === "Command" &&
@@ -92,10 +113,10 @@ function keepAttributes(schemaObject) {
   return Object.keys(kept).length > 0 ? kept : undefined;
 }
 
-function pruneSchema(schema) {
+export function pruneSchema(schema: SchemaDocument): SchemaDocument {
   return {
     objects: schema.objects.map((schemaObject) => {
-      const kept = {
+      const kept: SchemaObject = {
         path: schemaObject.path,
         type: schemaObject.type,
       };
@@ -112,24 +133,4 @@ function pruneSchema(schema) {
       return kept;
     }),
   };
-}
-
-if (!existsSync(sourceDir)) {
-  throw new Error("Schema source directory not found: src/schemas");
-}
-
-rmSync(distDir, { force: true, recursive: true });
-mkdirSync(distDir, { recursive: true });
-
-for (const file of readdirSync(sourceDir)) {
-  const sourcePath = join(sourceDir, file);
-  const distPath = join(distDir, file);
-
-  if (!file.endsWith(".json")) {
-    copyFileSync(sourcePath, distPath);
-    continue;
-  }
-
-  const schema = JSON.parse(readFileSync(sourcePath, "utf8"));
-  writeFileSync(distPath, JSON.stringify(pruneSchema(schema)));
 }

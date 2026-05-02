@@ -1,5 +1,17 @@
 import { EventEmitter } from "events";
+import { jest } from "@jest/globals";
 import "./runtime.ts";
+import {
+  createSchemaSoftwareStatusEntries,
+  defaultProductPlatform,
+  defaultStatusEntries,
+} from "./defaults.ts";
+import {
+  commandSuccessResponse,
+  invalidCommandError,
+  invalidPathError,
+  missingOrInvalidCommandParametersError,
+} from "./responses.ts";
 import {
   getProductCodes,
   loadSchemaModel,
@@ -12,158 +24,729 @@ import {
   type SchemaNode,
 } from "./utils/index.ts";
 
-const commandSuccessResponse = { status: "OK" };
-const invalidCommandError = { code: -32601, message: "Method not found." };
-const missingOrInvalidCommandParametersError = {
-  code: -32602,
-  message: "Bad usage: Missing or invalid parameter(s).",
-};
-const invalidPathError = {
-  code: -32602,
-  message: "No match on Path argument",
-};
-const schemaModel = loadSchemaModel();
+const schemaCatalog = loadSchemaModel();
 const materializedValueSymbol = Symbol("materializedValue");
 
-class MockXapi extends EventEmitter {
-  #configStore = new Map<string, unknown>(schemaModel.defaults);
-  #statusStore = new Map<string, unknown>([["Status.Audio.Volume", 20]]);
+type NormalizedPathSegment = string | number;
+type PathInput = string | Array<string | number>;
+type StoreDomain = "Config" | "Status";
+type SubscriptionDomain = StoreDomain | "Event";
+type CommandHandler = (
+  params?: unknown,
+  body?: unknown,
+  call?: XapiCallRecord,
+) => unknown;
+
+interface XapiCallRecord {
+  body?: unknown;
+  listener?: unknown;
+  normalizedPath: NormalizedPathSegment[];
+  once?: boolean;
+  originalPath?: PathInput | undefined;
+  params?: unknown;
+  path: NormalizedPathSegment[];
+  value?: unknown;
+}
+
+interface XapiCallHistory {
+  command: XapiCallRecord[];
+  config: {
+    get: XapiCallRecord[];
+    on: XapiCallRecord[];
+    set: XapiCallRecord[];
+  };
+  doc: XapiCallRecord[];
+  event: {
+    on: XapiCallRecord[];
+  };
+  status: {
+    get: XapiCallRecord[];
+    on: XapiCallRecord[];
+  };
+}
+
+function createConfigStore() {
+  return new Map<string, unknown>(schemaCatalog.defaultModel.defaults);
+}
+
+function createStatusStore() {
+  return new Map<string, unknown>(defaultStatusEntries);
+}
+
+function createEmptyCallHistory(): XapiCallHistory {
+  return {
+    command: [],
+    config: {
+      get: [],
+      on: [],
+      set: [],
+    },
+    doc: [],
+    event: {
+      on: [],
+    },
+    status: {
+      get: [],
+      on: [],
+    },
+  };
+}
+
+function createRejectedResult(error: unknown) {
+  const result = Promise.reject(error);
+  result.catch(() => undefined);
+  return result;
+}
+
+export class MockXapi extends EventEmitter {
+  #callHistory = createEmptyCallHistory();
+  #commandHandlers = new Map<string, CommandHandler>();
+  #commandResults = new Map<string, unknown>();
+  #configStore = createConfigStore();
+  #docResults = new Map<string, unknown>();
+  #proxyCache = new Map<string, unknown>();
+  #statusStore = createStatusStore();
+
   Command: any;
   Config: any;
   Event: any;
   Status: any;
+  close: any;
+  command: any;
+  config: any;
+  doc: any;
+  event: any;
+  status: any;
+  version = "6.0.0";
 
   constructor() {
     super();
 
+    this.command = jest.fn((path: PathInput, params?: unknown, body?: unknown) =>
+      this.#command(path, params, body),
+    );
+    this.doc = jest.fn((path: PathInput) => this.#doc(path));
+    this.close = jest.fn(() => undefined);
+    this.status = {
+      get: jest.fn((path: PathInput = []) => this.#statusGet(path)),
+      on: jest.fn(
+        (
+          path: PathInput | ((payload: unknown) => void),
+          listener?: (payload: unknown) => void,
+        ) => {
+          const subscription = this.#normalizeSubscriptionArgs(path, listener);
+          return this.#statusOn(subscription.path, subscription.listener, false);
+        },
+      ),
+      once: jest.fn(
+        (
+          path: PathInput | ((payload: unknown) => void),
+          listener?: (payload: unknown) => void,
+        ) => {
+          const subscription = this.#normalizeSubscriptionArgs(path, listener);
+          return this.#statusOn(subscription.path, subscription.listener, true);
+        },
+      ),
+    };
+    this.config = {
+      get: jest.fn((path: PathInput = []) => this.#configGet(path)),
+      set: jest.fn((path: PathInput, value: unknown) => this.#configSet(path, value)),
+      on: jest.fn(
+        (
+          path: PathInput | ((payload: unknown) => void),
+          listener?: (payload: unknown) => void,
+        ) => {
+          const subscription = this.#normalizeSubscriptionArgs(path, listener);
+          return this.#configOn(subscription.path, subscription.listener, false);
+        },
+      ),
+      once: jest.fn(
+        (
+          path: PathInput | ((payload: unknown) => void),
+          listener?: (payload: unknown) => void,
+        ) => {
+          const subscription = this.#normalizeSubscriptionArgs(path, listener);
+          return this.#configOn(subscription.path, subscription.listener, true);
+        },
+      ),
+    };
+    this.event = {
+      on: jest.fn(
+        (
+          path: PathInput | ((payload: unknown) => void),
+          listener?: (payload: unknown) => void,
+        ) => {
+          const subscription = this.#normalizeSubscriptionArgs(path, listener);
+          return this.#eventOn(subscription.path, subscription.listener, false);
+        },
+      ),
+      once: jest.fn(
+        (
+          path: PathInput | ((payload: unknown) => void),
+          listener?: (payload: unknown) => void,
+        ) => {
+          const subscription = this.#normalizeSubscriptionArgs(path, listener);
+          return this.#eventOn(subscription.path, subscription.listener, true);
+        },
+      ),
+    };
+
     this.Command = proxy({
+      cache: this.#proxyCache,
       callable: false,
-      invalidError: invalidCommandError,
       invoke: ({ args, path }) => {
-        if (!this.#pathSupportsActiveProduct(path, true)) {
-          return Promise.reject(invalidCommandError);
-        }
-
-        const commandValidationError = this.#validateCommandArguments(path, args[0]);
-
-        if (commandValidationError) {
-          return Promise.reject(commandValidationError);
-        }
-
-        return Promise.resolve(commandSuccessResponse);
+        return this.command(this.#getApiPathFromProxyPath(path), args[0], args[1]);
       },
-      node: schemaModel.roots.Command,
+      node: schemaCatalog.roots.Command,
       path: ["Command"],
     });
 
     this.Config = proxy({
-      allowedMethods: ["get", "set", "on"],
+      allowedMethods: ["get", "set", "on", "once"],
+      cache: this.#proxyCache,
       invalidError: invalidPathError,
-      invoke: ({ args, node, operation, path }) => {
-        const requiresExactProductPath = operation === "set";
-        const pathSegments = this.#getPathSegments(path);
-
-        if (!this.#pathSupportsActiveProduct(pathSegments, requiresExactProductPath)) {
-          return Promise.reject(invalidPathError);
-        }
-
+      invoke: ({ args, operation, path }) => {
+        const apiPath = this.#getApiPathFromProxyPath(path);
         if (operation === "get") {
-          return this.#getMaterializedStoreValue(this.#configStore, node, path);
+          return this.config.get(apiPath);
         }
-
-        const storeKey = this.#getStoreKey(path);
 
         if (operation === "set") {
-          const validationError = this.#validatePathValue("Config", pathSegments, args[0]);
-
-          if (validationError) {
-            return Promise.reject(validationError);
-          }
-
-          this.#configStore.set(storeKey, args[0]);
-          this.#emitStoreChange("Config", this.#configStore, path, args[0]);
-          return args[0];
+          return this.config.set(apiPath, args[0]);
         }
 
         if (operation === "on") {
-          return this.on(`Config:${storeKey}`, args[0]);
+          return this.config.on(apiPath, args[0]);
+        }
+
+        if (operation === "once") {
+          return this.config.once(apiPath, args[0]);
         }
 
         throw new Error(`Unsupported config operation: ${operation}`);
       },
-      node: schemaModel.roots.Configuration,
+      node: schemaCatalog.roots.Configuration,
       path: ["Config"],
     });
 
     this.Status = proxy({
-      allowedMethods: ["get", "on", "set"],
+      allowedMethods: ["get", "on", "once", "set"],
+      cache: this.#proxyCache,
       invalidError: invalidPathError,
-      invoke: ({ args, node, operation, path }) => {
-        const requiresExactProductPath = operation === "set";
-        const pathSegments = this.#getPathSegments(path);
-
-        if (!this.#pathSupportsActiveProduct(pathSegments, requiresExactProductPath)) {
-          return Promise.reject(invalidPathError);
-        }
-
+      invoke: ({ args, operation, path }) => {
+        const apiPath = this.#getApiPathFromProxyPath(path);
         if (operation === "get") {
-          return this.#getMaterializedStoreValue(this.#statusStore, node, path);
+          return this.status.get(apiPath);
         }
-
-        const storeKey = this.#getStoreKey(path);
 
         if (operation === "on") {
-          return this.on(`Status:${storeKey}`, args[0]);
+          return this.status.on(apiPath, args[0]);
+        }
+
+        if (operation === "once") {
+          return this.status.once(apiPath, args[0]);
         }
 
         if (operation === "set") {
-          const validationError = this.#validatePathValue("Status", pathSegments, args[0]);
-
-          if (validationError) {
-            return Promise.reject(validationError);
-          }
-
-          this.#statusStore.set(storeKey, args[0]);
-          this.#emitStoreChange("Status", this.#statusStore, path, args[0]);
-          return args[0];
+          return this.emitStatus(apiPath, args[0]);
         }
 
         throw new Error(`Unsupported status operation: ${operation}`);
       },
-      node: schemaModel.roots.Status,
+      node: schemaCatalog.roots.Status,
       path: ["Status"],
     });
 
     this.Event = proxy({
-      allowedMethods: ["emit", "on"],
+      allowedMethods: ["emit", "on", "once"],
+      cache: this.#proxyCache,
       invoke: ({ args, operation, path }) => {
-        const requiresExactProductPath = operation === "emit";
-        const pathSegments = this.#getPathSegments(path);
-
-        if (!this.#pathSupportsActiveProduct(pathSegments, requiresExactProductPath)) {
-          return Promise.reject(invalidPathError);
+        const apiPath = this.#getApiPathFromProxyPath(path);
+        if (operation === "on") {
+          return this.event.on(apiPath, args[0]);
         }
 
-        const eventKey = this.#getStoreKey(path);
-
-        if (operation === "on") {
-          return this.on(`Event:${eventKey}`, args[0]);
+        if (operation === "once") {
+          return this.event.once(apiPath, args[0]);
         }
 
         if (operation === "emit") {
-          this.#emitScopedChange("Event", null, this.#getPathSegments(path), args[0]);
-          return true;
+          return this.emitEvent(apiPath, args[0]);
         }
 
         throw new Error(`Unsupported event operation: ${operation}`);
       },
-      node: schemaModel.roots.Event,
+      node: schemaCatalog.roots.Event,
       path: ["Event"],
     });
   }
 
-  #getStoreKey(path: string[]) {
-    return path.slice(0, -1).join(".");
+  get callHistory() {
+    return this.getCallHistory();
+  }
+
+  getCalls() {
+    return this.getCallHistory();
+  }
+
+  getCallHistory(): XapiCallHistory {
+    return {
+      command: this.#copyCallRecords(this.#callHistory.command),
+      config: {
+        get: this.#copyCallRecords(this.#callHistory.config.get),
+        on: this.#copyCallRecords(this.#callHistory.config.on),
+        set: this.#copyCallRecords(this.#callHistory.config.set),
+      },
+      doc: this.#copyCallRecords(this.#callHistory.doc),
+      event: {
+        on: this.#copyCallRecords(this.#callHistory.event.on),
+      },
+      status: {
+        get: this.#copyCallRecords(this.#callHistory.status.get),
+        on: this.#copyCallRecords(this.#callHistory.status.on),
+      },
+    };
+  }
+
+  clearCallHistory() {
+    this.#callHistory = createEmptyCallHistory();
+    this.#clearMockCalls();
+  }
+
+  reset() {
+    this.#callHistory = createEmptyCallHistory();
+    this.#commandHandlers.clear();
+    this.#commandResults.clear();
+    this.#configStore = createConfigStore();
+    this.#docResults.clear();
+    this.#statusStore = createStatusStore();
+    this.removeAllListeners();
+    this.#clearMockCalls();
+  }
+
+  resetAll() {
+    this.reset();
+  }
+
+  resetMock() {
+    this.reset();
+  }
+
+  setStatus(path: PathInput, value: unknown) {
+    this.#setStoreValue("Status", this.#statusStore, path, value, {
+      emit: false,
+      validate: false,
+    });
+    return value;
+  }
+
+  emitStatus(path: PathInput, value: unknown) {
+    this.#setStoreValue("Status", this.#statusStore, path, value, {
+      emit: true,
+      validate: true,
+    });
+    return value;
+  }
+
+  setConfig(path: PathInput, value: unknown) {
+    this.#setStoreValue("Config", this.#configStore, path, value, {
+      emit: false,
+      validate: false,
+    });
+    return value;
+  }
+
+  emitConfig(path: PathInput, value: unknown) {
+    this.#setStoreValue("Config", this.#configStore, path, value, {
+      emit: true,
+      validate: true,
+    });
+    return value;
+  }
+
+  setDocResult(path: PathInput, result: unknown) {
+    this.#docResults.set(this.#getMockPathKey(path), result);
+  }
+
+  setCommandResult(path: PathInput, result: unknown) {
+    this.#commandResults.set(this.#getMockPathKey(path), result);
+  }
+
+  setCommandHandler(path: PathInput, handler: CommandHandler) {
+    this.#commandHandlers.set(this.#getMockPathKey(path), handler);
+  }
+
+  #command(path: PathInput, params?: unknown, body?: unknown) {
+    const normalizedPath = this.#normalizePath(path);
+    const call = this.#recordCall(this.#callHistory.command, path, normalizedPath, {
+      body,
+      params,
+    });
+    const commandKey = this.#getNormalizedPathKey(normalizedPath);
+    const commandHandler = this.#commandHandlers.get(commandKey);
+
+    if (commandHandler) {
+      try {
+        return Promise.resolve(commandHandler(params, body, call));
+      } catch (error) {
+        return createRejectedResult(error);
+      }
+    }
+
+    if (this.#commandResults.has(commandKey)) {
+      return Promise.resolve(this.#commandResults.get(commandKey));
+    }
+
+    const commandPath = this.#getDomainPath("Command", normalizedPath);
+    const commandNode = this.#resolvePathNode(commandPath);
+
+    if (!commandNode?.terminal || !this.#pathSupportsActiveProduct(commandPath, true)) {
+      return createRejectedResult({ ...invalidCommandError });
+    }
+
+    const commandValidationError = this.#validateCommandArguments(commandPath, params);
+
+    if (commandValidationError) {
+      return createRejectedResult(commandValidationError);
+    }
+
+    return Promise.resolve(commandSuccessResponse);
+  }
+
+  #doc(path: PathInput) {
+    const normalizedPath = this.#normalizePath(path);
+    this.#recordCall(this.#callHistory.doc, path, normalizedPath);
+    const docKey = this.#getNormalizedPathKey(normalizedPath);
+
+    if (this.#docResults.has(docKey)) {
+      return Promise.resolve(this.#docResults.get(docKey));
+    }
+
+    return Promise.resolve(this.#getSchemaDocResult(normalizedPath));
+  }
+
+  #statusGet(path: PathInput) {
+    const normalizedPath = this.#normalizePath(path);
+    this.#recordCall(this.#callHistory.status.get, path, normalizedPath);
+    return this.#getStoreValue("Status", this.#statusStore, path);
+  }
+
+  #configGet(path: PathInput) {
+    const normalizedPath = this.#normalizePath(path);
+    this.#recordCall(this.#callHistory.config.get, path, normalizedPath);
+    return this.#getStoreValue("Config", this.#configStore, path);
+  }
+
+  #configSet(path: PathInput, value: unknown) {
+    const normalizedPath = this.#normalizePath(path);
+    this.#recordCall(this.#callHistory.config.set, path, normalizedPath, { value });
+
+    try {
+      const storedValue = this.#setStoreValue("Config", this.#configStore, path, value, {
+        emit: true,
+        validate: true,
+      });
+      return Promise.resolve(storedValue);
+    } catch (error) {
+      return createRejectedResult(error);
+    }
+  }
+
+  #statusOn(path: PathInput, listener: (payload: unknown) => void, once: boolean) {
+    const normalizedPath = this.#normalizePath(path);
+    this.#recordCall(this.#callHistory.status.on, path, normalizedPath, {
+      listener,
+      once,
+    });
+    return this.#subscribe("Status", path, listener, once);
+  }
+
+  #configOn(path: PathInput, listener: (payload: unknown) => void, once: boolean) {
+    const normalizedPath = this.#normalizePath(path);
+    this.#recordCall(this.#callHistory.config.on, path, normalizedPath, {
+      listener,
+      once,
+    });
+    return this.#subscribe("Config", path, listener, once);
+  }
+
+  #eventOn(path: PathInput, listener: (payload: unknown) => void, once: boolean) {
+    const normalizedPath = this.#normalizePath(path);
+    this.#recordCall(this.#callHistory.event.on, path, normalizedPath, {
+      listener,
+      once,
+    });
+    return this.#subscribe("Event", path, listener, once);
+  }
+
+  #getStoreValue(domain: StoreDomain, store: Map<string, unknown>, path: PathInput) {
+    const domainPath = this.#getDomainPath(domain, this.#normalizePath(path));
+    const node = this.#resolvePathNode(domainPath);
+
+    if (!node || !this.#pathSupportsActiveProduct(domainPath, false)) {
+      return createRejectedResult({ ...invalidPathError });
+    }
+
+    return Promise.resolve(
+      this.#getMaterializedStoreValue(store, node, [...domainPath, "get"]),
+    );
+  }
+
+  #setStoreValue(
+    domain: StoreDomain,
+    store: Map<string, unknown>,
+    path: PathInput,
+    value: unknown,
+    options: {
+      emit: boolean;
+      validate: boolean;
+    },
+  ) {
+    const normalizedPath = this.#normalizePath(path);
+    const domainPath = this.#getDomainPath(domain, normalizedPath);
+    const node = this.#resolvePathNode(domainPath);
+
+    if (options.validate) {
+      if (!node?.terminal || !this.#pathSupportsActiveProduct(domainPath, true)) {
+        throw { ...invalidPathError };
+      }
+
+      const validationError = this.#validatePathValue(domain, domainPath, value);
+
+      if (validationError) {
+        throw validationError;
+      }
+    }
+
+    store.set(domainPath.join("."), value);
+
+    if (options.emit) {
+      this.#emitScopedChange(domain, store, domainPath, value);
+    }
+
+    return value;
+  }
+
+  #subscribe(
+    domain: SubscriptionDomain,
+    path: PathInput,
+    listener: (payload: unknown) => void,
+    once: boolean,
+  ) {
+    if (typeof listener !== "function") {
+      throw new TypeError("xapi listener must be a function");
+    }
+
+    const domainPath = this.#getDomainPath(domain, this.#normalizePath(path));
+    const node = this.#resolvePathNode(domainPath);
+
+    if (!node || !this.#pathSupportsActiveProduct(domainPath, false)) {
+      throw { ...invalidPathError };
+    }
+
+    const eventName = `${domain}:${domainPath.join(".")}`;
+    let unsubscribe = () => {
+      this.off(eventName, listener);
+    };
+
+    if (!once) {
+      this.on(eventName, listener);
+      return unsubscribe;
+    }
+
+    const wrappedListener = (payload: unknown) => {
+      unsubscribe();
+      listener(payload);
+    };
+
+    unsubscribe = () => {
+      this.off(eventName, wrappedListener);
+    };
+    this.on(eventName, wrappedListener);
+    return unsubscribe;
+  }
+
+  #normalizeSubscriptionArgs(
+    path: PathInput | ((payload: unknown) => void),
+    listener?: (payload: unknown) => void,
+  ) {
+    if (typeof path === "function" && typeof listener === "undefined") {
+      return {
+        listener: path,
+        path: [] satisfies NormalizedPathSegment[],
+      };
+    }
+
+    return {
+      listener: listener as (payload: unknown) => void,
+      path: path as PathInput,
+    };
+  }
+
+  #getApiPathFromProxyPath(path: string[]) {
+    const apiSegments = path.slice(1);
+    const lastSegment = apiSegments.at(-1);
+
+    if (
+      lastSegment === "emit" ||
+      lastSegment === "get" ||
+      lastSegment === "on" ||
+      lastSegment === "once" ||
+      lastSegment === "set"
+    ) {
+      apiSegments.pop();
+    }
+
+    return apiSegments.join("/");
+  }
+
+  #normalizePath(path: PathInput = []) {
+    const rawSegments = Array.isArray(path) ? path : [path];
+    const normalizedSegments: NormalizedPathSegment[] = [];
+
+    for (const rawSegment of rawSegments) {
+      if (typeof rawSegment === "number") {
+        normalizedSegments.push(rawSegment);
+        continue;
+      }
+
+      for (const segment of rawSegment.split(/[./\s]+/)) {
+        const trimmedSegment = segment.trim();
+
+        if (!trimmedSegment) {
+          continue;
+        }
+
+        normalizedSegments.push(this.#normalizePathSegment(trimmedSegment));
+      }
+    }
+
+    return normalizedSegments;
+  }
+
+  #normalizePathSegment(segment: string): NormalizedPathSegment {
+    if (segment === "*") {
+      return segment;
+    }
+
+    if (/^-?\d+$/.test(segment)) {
+      return Number(segment);
+    }
+
+    return `${segment.charAt(0).toUpperCase()}${segment.slice(1)}`;
+  }
+
+  #getDomainPath(domain: "Command" | SubscriptionDomain, normalizedPath: NormalizedPathSegment[]) {
+    return [domain, ...normalizedPath.map(String)];
+  }
+
+  #getNormalizedPathKey(normalizedPath: NormalizedPathSegment[]) {
+    return normalizedPath.map(String).join(".");
+  }
+
+  #getMockPathKey(path: PathInput) {
+    return this.#getNormalizedPathKey(this.#normalizePath(path));
+  }
+
+  #getSchemaDocResult(normalizedPath: NormalizedPathSegment[]) {
+    const normalizedPathStrings = normalizedPath.map(String);
+    const docKeys = this.#getSchemaDocKeys(normalizedPathStrings);
+    const schemaModel = this.#getActiveSchemaModel();
+
+    for (const docKey of docKeys) {
+      const docPath = docKey.split(".");
+      const productPath = docPath[0] === "Configuration"
+        ? ["Config", ...docPath.slice(1)]
+        : docPath;
+
+      if (
+        schemaModel.docs.has(docKey) &&
+        this.#pathSupportsActiveProduct(productPath, true)
+      ) {
+        return schemaModel.docs.get(docKey);
+      }
+    }
+
+    return undefined;
+  }
+
+  #getSchemaDocKeys(pathSegments: string[]) {
+    const [rootSegment, ...remainingSegments] = pathSegments;
+
+    if (rootSegment === "Config") {
+      return [
+        ["Config", ...remainingSegments].join("."),
+        ["Configuration", ...remainingSegments].join("."),
+      ];
+    }
+
+    if (rootSegment === "Configuration") {
+      return [
+        ["Configuration", ...remainingSegments].join("."),
+        ["Config", ...remainingSegments].join("."),
+      ];
+    }
+
+    return [pathSegments.join(".")];
+  }
+
+  #recordCall(
+    records: XapiCallRecord[],
+    originalPath: PathInput | undefined,
+    normalizedPath: NormalizedPathSegment[],
+    details: Partial<Omit<XapiCallRecord, "normalizedPath" | "originalPath" | "path">> = {},
+  ) {
+    const normalizedPathCopy = [...normalizedPath];
+    const record: XapiCallRecord = {
+      ...details,
+      normalizedPath: normalizedPathCopy,
+      originalPath: this.#copyPathInput(originalPath),
+      path: [...normalizedPathCopy],
+    };
+
+    records.push(record);
+    return record;
+  }
+
+  #copyPathInput(path: PathInput | undefined) {
+    return Array.isArray(path) ? [...path] : path;
+  }
+
+  #copyCallRecords(records: XapiCallRecord[]) {
+    return records.map((record) => ({
+      ...record,
+      normalizedPath: [...record.normalizedPath],
+      originalPath: this.#copyPathInput(record.originalPath),
+      path: [...record.path],
+    }));
+  }
+
+  #clearMockCalls() {
+    const mocks = [
+      this.close,
+      this.command,
+      this.config.get,
+      this.config.on,
+      this.config.once,
+      this.config.set,
+      this.doc,
+      this.event.on,
+      this.event.once,
+      this.status.get,
+      this.status.on,
+      this.status.once,
+      ...this.#proxyCache.values(),
+    ];
+
+    for (const mock of mocks) {
+      if (
+        typeof mock === "function" &&
+        "mockClear" in mock &&
+        typeof mock.mockClear === "function"
+      ) {
+        mock.mockClear();
+      }
+    }
   }
 
   #getPathSegments(path: string[]) {
@@ -171,13 +754,19 @@ class MockXapi extends EventEmitter {
   }
 
   #getActiveProductCodes() {
-    const productPlatform = this.#statusStore.get("Status.SystemUnit.ProductPlatform");
+    const productPlatform =
+      this.#statusStore.get("Status.SystemUnit.ProductPlatform") ??
+      defaultProductPlatform;
 
     if (typeof productPlatform !== "string") {
-      return [];
+      return getProductCodes(defaultProductPlatform);
     }
 
     return getProductCodes(productPlatform);
+  }
+
+  #getActiveSchemaModel() {
+    return schemaCatalog.getModelForProductCodes(this.#getActiveProductCodes());
   }
 
   #getSchemaDomain(pathRoot: string): SchemaDomain {
@@ -267,6 +856,7 @@ class MockXapi extends EventEmitter {
     }
 
     const schemaDomain = this.#getSchemaDomain(rootSegment);
+    const schemaModel = this.#getActiveSchemaModel();
     const productPathPatterns = schemaModel.productPaths.get(schemaDomain) ?? [];
 
     return productPathPatterns.some((productPathPattern) =>
@@ -291,6 +881,8 @@ class MockXapi extends EventEmitter {
       return [];
     }
 
+    const schemaModel = this.#getActiveSchemaModel();
+
     return schemaModel.productDefaults
       .filter((productDefault) =>
         this.#productsIncludeActiveProduct(
@@ -303,6 +895,18 @@ class MockXapi extends EventEmitter {
         storeValue: productDefault.value,
         skipProductSupportCheck: true,
       }));
+  }
+
+  #getSchemaDefaultStatusEntries() {
+    const schemaModel = this.#getActiveSchemaModel();
+
+    return createSchemaSoftwareStatusEntries(schemaModel.name).map(
+      ([storeKey, storeValue]) => ({
+        skipProductSupportCheck: false,
+        storeKey,
+        storeValue,
+      }),
+    );
   }
 
   #pathValuesForActiveProduct(
@@ -332,7 +936,9 @@ class MockXapi extends EventEmitter {
     }
 
     const productScopedValues = this.#pathValuesForActiveProduct(
-      pathRoot === "Config" ? schemaModel.configValues : schemaModel.statusValues,
+      pathRoot === "Config"
+        ? this.#getActiveSchemaModel().configValues
+        : this.#getActiveSchemaModel().statusValues,
       pathSegments,
     );
 
@@ -348,6 +954,8 @@ class MockXapi extends EventEmitter {
   }
 
   #getSchemaRoot(pathRoot: string) {
+    const schemaModel = this.#getActiveSchemaModel();
+
     if (pathRoot === "Config") {
       return schemaModel.roots.Configuration;
     }
@@ -527,9 +1135,23 @@ class MockXapi extends EventEmitter {
     if (keys.length > 0 && numericKeys.length === keys.length) {
       return numericKeys
         .sort((left, right) => Number(left) - Number(right))
-        .map((key) =>
-          this.#finalizeMaterializedValue(objectValue[key]),
-        );
+        .map((key) => {
+          const finalizedValue = this.#finalizeMaterializedValue(objectValue[key]);
+
+          if (
+            typeof finalizedValue === "object" &&
+            finalizedValue !== null &&
+            !Array.isArray(finalizedValue) &&
+            !Object.hasOwn(finalizedValue, "id")
+          ) {
+            return {
+              ...(finalizedValue as Record<string, unknown>),
+              id: key,
+            };
+          }
+
+          return finalizedValue;
+        });
     }
 
     const result: Record<string, unknown> = {};
@@ -584,7 +1206,10 @@ class MockXapi extends EventEmitter {
             ...this.#getProductDefaultStoreEntries(activeProductCodes),
             ...storeEntries,
           ]
-        : storeEntries;
+        : [
+            ...this.#getSchemaDefaultStatusEntries(),
+            ...storeEntries,
+          ];
 
     for (const { skipProductSupportCheck, storeKey, storeValue } of materializableEntries) {
       if (!skipProductSupportCheck && !this.#storeKeySupportsActiveProduct(storeKey)) {
@@ -642,7 +1267,54 @@ class MockXapi extends EventEmitter {
       return undefined;
     }
 
-    return this.#finalizeMaterializedValue(materializedResult);
+    const materializedValue = this.#finalizeMaterializedValue(materializedResult);
+    const indexedBranchId = this.#getIndexedBranchId(path.slice(0, -1));
+
+    if (
+      indexedBranchId &&
+      typeof materializedValue === "object" &&
+      materializedValue !== null &&
+      !Array.isArray(materializedValue) &&
+      !Object.hasOwn(materializedValue, "id")
+    ) {
+      return {
+        ...(materializedValue as Record<string, unknown>),
+        id: indexedBranchId,
+      };
+    }
+
+    return materializedValue;
+  }
+
+  #getIndexedBranchId(pathSegments: string[]) {
+    const [rootSegment, ...remainingSegments] = pathSegments;
+    if (typeof rootSegment !== "string") {
+      return null;
+    }
+
+    let currentNode = this.#getSchemaRoot(rootSegment);
+
+    for (const [index, segment] of remainingSegments.entries()) {
+      const isLastSegment = index === remainingSegments.length - 1;
+
+      if (this.#matchesIndexedSegment(currentNode, segment)) {
+        if (isLastSegment) {
+          return segment;
+        }
+
+        currentNode = currentNode.indexedChild?.node ?? currentNode;
+        continue;
+      }
+
+      const childNode = currentNode.children.get(segment);
+      if (!childNode) {
+        return null;
+      }
+
+      currentNode = childNode;
+    }
+
+    return null;
   }
 
   #createIndexedBranchPayload(
@@ -726,24 +1398,14 @@ class MockXapi extends EventEmitter {
     }
   }
 
-  #emitStoreChange(
-    domain: "Config" | "Status",
-    store: Map<string, unknown>,
-    path: string[],
-    value: unknown,
-  ) {
-    const changedPathSegments = this.#getPathSegments(path);
-    this.#emitScopedChange(domain, store, changedPathSegments, value);
-  }
-
   #normalizeDomainPath(domain: "Config" | "Status", path: string) {
-    const segments = path.split(".").filter(Boolean);
+    const segments = this.#getDomainPath(domain, this.#normalizePath(path));
 
-    if (segments[0] === domain) {
-      return segments;
+    if (segments[1] === domain) {
+      return segments.slice(1);
     }
 
-    return [domain, ...segments];
+    return segments;
   }
 
   #removeStoreBranch(domain: "Config" | "Status", store: Map<string, unknown>, path: string) {
@@ -789,10 +1451,10 @@ class MockXapi extends EventEmitter {
     return true;
   }
 
-  #createInvalidCommandParameterError(parameterName: string) {
+  #createInvalidCommandParameterError() {
     return {
-      code: -32602,
-      message: `Bad usage: Bad argument to parameter "${parameterName}".`,
+      code: missingOrInvalidCommandParametersError.code,
+      message: missingOrInvalidCommandParametersError.message,
     };
   }
 
@@ -907,14 +1569,11 @@ class MockXapi extends EventEmitter {
 
   #validateCommandArguments(path: string[], parameters: unknown) {
     const commandKey = path.join(".");
+    const schemaModel = this.#getActiveSchemaModel();
     const signatures = schemaModel.commandSignatures.get(commandKey);
 
     if (!signatures || signatures.length === 0) {
       return null;
-    }
-
-    if (!this.#isPlainObject(parameters)) {
-      return missingOrInvalidCommandParametersError;
     }
 
     const activeProductCodes = this.#getActiveProductCodes();
@@ -926,6 +1585,19 @@ class MockXapi extends EventEmitter {
 
     if (activeSignatures.length === 0) {
       return null;
+    }
+
+    if (!this.#isPlainObject(parameters)) {
+      if (
+        typeof parameters === "undefined" &&
+        activeSignatures.some((signature) =>
+          signature.parameters.every((parameter) => !parameter.required),
+        )
+      ) {
+        return null;
+      }
+
+      return missingOrInvalidCommandParametersError;
     }
 
     const parameterRecord = parameters as Record<string, unknown>;
@@ -966,16 +1638,22 @@ class MockXapi extends EventEmitter {
     }
 
     if (firstBadParameterName) {
-      return this.#createInvalidCommandParameterError(firstBadParameterName);
+      return this.#createInvalidCommandParameterError();
     }
 
     return missingOrInvalidCommandParametersError;
   }
 
   // Helper to emit mock events in tests
-  emitEvent(eventName: string, eventData: any) {
-    const eventSegments = ["Event", ...eventName.split(".").filter(Boolean)];
+  emitEvent(path: PathInput, eventData: any) {
+    const eventSegments = this.#getDomainPath("Event", this.#normalizePath(path));
+
+    if (!this.#resolvePathNode(eventSegments) || !this.#pathSupportsActiveProduct(eventSegments, true)) {
+      throw { ...invalidPathError };
+    }
+
     this.#emitScopedChange("Event", null, eventSegments, eventData);
+    return true;
   }
 
   // Helper to remove a status branch in tests, such as a call ending.
@@ -985,5 +1663,9 @@ class MockXapi extends EventEmitter {
 
 }
 
-const xapi = new MockXapi();
+export function createXapi() {
+  return new MockXapi();
+}
+
+const xapi = createXapi();
 export default xapi;

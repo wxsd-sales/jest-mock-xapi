@@ -1,1 +1,1 @@
-export { default } from "./xapi.ts";
+export { createXapi, default, MockXapi } from "./xapi.ts";

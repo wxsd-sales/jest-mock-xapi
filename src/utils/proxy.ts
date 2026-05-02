@@ -1,7 +1,7 @@
 import { jest } from "@jest/globals";
 import { resolveSchemaChild, type SchemaNode } from "./schema.ts";
 
-type ProxyOperation = "call" | "emit" | "get" | "on" | "set";
+type ProxyOperation = "call" | "emit" | "get" | "on" | "once" | "set";
 
 interface XapiErrorPayload {
   code: number;
@@ -17,6 +17,7 @@ interface ProxyInvocation {
 
 interface SchemaProxyOptions {
   allowedMethods?: ProxyOperation[];
+  cache?: Map<string, unknown>;
   callable?: boolean;
   invalidError?: XapiErrorPayload | undefined;
   isInvalid?: boolean;
@@ -25,8 +26,6 @@ interface SchemaProxyOptions {
   operation?: Exclude<ProxyOperation, "call">;
   path: string[];
 }
-
-const proxyCache = new Map<string, unknown>();
 
 const passthroughProps = new Set([
   "_isMockFunction",
@@ -57,15 +56,19 @@ const passthroughProps = new Set([
 ]);
 
 function createRejectedInvalidPathResult(invalidError: XapiErrorPayload) {
-  return Promise.reject({
+  const result = Promise.reject({
     code: invalidError.code,
     message: invalidError.message,
   });
+
+  result.catch(() => undefined);
+  return result;
 }
 
 export default function proxy(options: SchemaProxyOptions) {
   const {
     allowedMethods = [],
+    cache = new Map<string, unknown>(),
     callable = false,
     invalidError,
     isInvalid = false,
@@ -76,8 +79,8 @@ export default function proxy(options: SchemaProxyOptions) {
   } = options;
   const pathKey = `${path.join(".")}::${operation ?? "path"}`;
 
-  if (proxyCache.has(pathKey)) {
-    return proxyCache.get(pathKey);
+  if (cache.has(pathKey)) {
+    return cache.get(pathKey);
   }
 
   const mockFn = jest.fn((...args: any[]) => {
@@ -118,6 +121,7 @@ export default function proxy(options: SchemaProxyOptions) {
         if (operation) {
           return proxy({
             allowedMethods,
+            cache,
             callable: true,
             invalidError,
             isInvalid: true,
@@ -131,6 +135,7 @@ export default function proxy(options: SchemaProxyOptions) {
         if (allowedMethods.includes(prop as ProxyOperation)) {
           return proxy({
             allowedMethods,
+            cache,
             callable: true,
             invalidError,
             isInvalid: true,
@@ -143,6 +148,7 @@ export default function proxy(options: SchemaProxyOptions) {
 
         return proxy({
           allowedMethods,
+          cache,
           callable: allowedMethods.length === 0,
           invalidError,
           isInvalid: true,
@@ -154,9 +160,10 @@ export default function proxy(options: SchemaProxyOptions) {
 
       if (
         allowedMethods.includes(prop as ProxyOperation) &&
-        (node.terminal || prop === "get" || prop === "on")
+        (node.terminal || prop === "get" || prop === "on" || prop === "once")
       ) {
         return proxy({
+          cache,
           callable: true,
           invoke,
           node,
@@ -173,6 +180,7 @@ export default function proxy(options: SchemaProxyOptions) {
       if (childNode) {
         return proxy({
           allowedMethods,
+          cache,
           callable: childNode.terminal && allowedMethods.length === 0,
           invoke,
           node: childNode,
@@ -182,6 +190,7 @@ export default function proxy(options: SchemaProxyOptions) {
 
       return proxy({
         allowedMethods,
+        cache,
         callable: allowedMethods.length === 0,
         invalidError,
         isInvalid: true,
@@ -204,6 +213,6 @@ export default function proxy(options: SchemaProxyOptions) {
     },
   });
 
-  proxyCache.set(pathKey, proxiedMock);
+  cache.set(pathKey, proxiedMock);
   return proxiedMock;
 }
