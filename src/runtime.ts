@@ -6,6 +6,13 @@ declare global {
 }
 
 const currentModulePath = path.normalize(fileURLToPath(import.meta.url));
+const sourceMappedRuntimePath = path.normalize(
+  fileURLToPath(new URL("../src/runtime.ts", import.meta.url)),
+);
+const runtimeModulePaths = new Set([
+  currentModulePath,
+  sourceMappedRuntimePath,
+]);
 const macroSourceExtensions = new Set([
   ".cjs",
   ".cts",
@@ -67,6 +74,10 @@ function sourcePathToModuleName(sourcePath: string) {
   return path.basename(sourcePath);
 }
 
+function isRuntimeModulePath(sourcePath: string) {
+  return runtimeModulePaths.has(sourcePath);
+}
+
 function mainModuleName() {
   const stackLines = new Error().stack?.split("\n").slice(1) ?? [];
 
@@ -79,7 +90,7 @@ function mainModuleName() {
 
     const normalizedLocation = path.normalize(stackLocation);
 
-    if (normalizedLocation === currentModulePath) {
+    if (isRuntimeModulePath(normalizedLocation)) {
       continue;
     }
 
