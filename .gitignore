@@ -148,6 +148,9 @@ instance/
 # Sphinx documentation
 docs/_build/
 
+# TypeDoc static site output
+/docs/
+
 # PyBuilder
 .pybuilder/
 target/

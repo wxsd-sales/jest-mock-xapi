@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, jest } from "@jest/globals";
 import { createSchemaSoftwareStatusEntries } from "../defaults.ts";
 import { getProductCodes, loadSchemaModel } from "../utils/index.ts";
-import xapi, { createXapi } from "../xapi.ts";
+import xapi from "../xapi.ts";
 
 const schemaCatalog = loadSchemaModel();
 
@@ -36,6 +36,57 @@ describe("xAPI Testing", () => {
     expect(xapi.config.set).toBeDefined();
     expect(xapi.event.on).toBeDefined();
   });
+
+  it("exposes the Jest mock API on new style and old style functions", () => {
+    const jestMockMethods = [
+      "getMockImplementation",
+      "getMockName",
+      "mockClear",
+      "mockImplementation",
+      "mockImplementationOnce",
+      "mockName",
+      "mockRejectedValue",
+      "mockRejectedValueOnce",
+      "mockResolvedValue",
+      "mockResolvedValueOnce",
+      "mockReset",
+      "mockRestore",
+      "mockReturnThis",
+      "mockReturnValue",
+      "mockReturnValueOnce",
+      "withImplementation",
+    ];
+    const mockedSurfaces = [
+      xapi.Command.Dial,
+      xapi.Status.Audio.Volume.get,
+      xapi.Status.Audio.Volume.set,
+      xapi.Config.Audio.DefaultVolume.get,
+      xapi.Config.Audio.DefaultVolume.set,
+      xapi.Event.UserInterface.Extensions.Widget.Action.emit,
+      xapi.command,
+      xapi.status.get,
+      xapi.status.on,
+      xapi.status.once,
+      xapi.config.get,
+      xapi.config.set,
+      xapi.config.on,
+      xapi.config.once,
+      xapi.event.on,
+      xapi.event.once,
+      xapi.doc,
+    ];
+
+    for (const mockedSurface of mockedSurfaces) {
+      const mock = mockedSurface as unknown as Record<string, unknown>;
+
+      expect(mock._isMockFunction).toBe(true);
+      expect(mock.mock).toBeDefined();
+
+      for (const method of jestMockMethods) {
+        expect(typeof mock[method]).toBe("function");
+      }
+    }
+  });
 });
 
 describe("Lowercase RoomOS APIs", () => {
@@ -60,7 +111,7 @@ describe("Lowercase RoomOS APIs", () => {
     );
   });
 
-  it("supports mock command handlers, command results, and doc results by path", async () => {
+  it("supports mock command handlers and command results by path", async () => {
     const handler = jest.fn(
       (_params?: unknown, _body?: unknown, _call?: unknown) => ({
         status: "handled",
@@ -68,8 +119,7 @@ describe("Lowercase RoomOS APIs", () => {
     );
 
     xapi.setCommandHandler("Dial", handler);
-    xapi.setCommandResult("UserInterface/Message/Alert/Display", { status: "displayed" });
-    xapi.setDocResult("Audio/Volume", { description: "Current volume" });
+    xapi.setCommandResult("UserInterface Message Alert Display", { status: "displayed" });
 
     await expect(xapi.command("Dial", { Number: "1234" })).resolves.toEqual({
       status: "handled",
@@ -77,9 +127,6 @@ describe("Lowercase RoomOS APIs", () => {
     await expect(
       xapi.command("UserInterface Message Alert Display"),
     ).resolves.toEqual({ status: "displayed" });
-    await expect(xapi.doc("Audio Volume")).resolves.toEqual({
-      description: "Current volume",
-    });
     expect(handler).toHaveBeenCalledWith(
       { Number: "1234" },
       undefined,
@@ -96,15 +143,102 @@ describe("Lowercase RoomOS APIs", () => {
         normalizedPath: ["UserInterface", "Message", "Alert", "Display"],
       }),
     ]);
-    expect(xapi.callHistory.doc[0]).toEqual(
+  });
+
+  it("supports path-scoped mockImplementationOnce for old style commands", async () => {
+    const handler = jest.fn(async (...args: unknown[]) => {
+      const [params] = args;
+
+      return {
+        dialed: (params as { Number?: string }).Number,
+      };
+    });
+
+    xapi.command.mockImplementationOnce("Dial", handler);
+
+    await expect(xapi.command("Audio Volume Set", { Level: 20 })).resolves.toEqual({
+      status: "OK",
+    });
+    await expect(xapi.command("Dial", { Number: "1234" })).resolves.toEqual({
+      dialed: "1234",
+    });
+    await expect(xapi.command("Dial", { Number: "5678" })).resolves.toEqual({
+      status: "OK",
+    });
+
+    expect(handler).toHaveBeenCalledTimes(1);
+    expect(handler).toHaveBeenCalledWith(
+      { Number: "1234" },
+      undefined,
       expect.objectContaining({
-        normalizedPath: ["Audio", "Volume"],
+        normalizedPath: ["Dial"],
       }),
     );
   });
 
+  it("supports path-scoped Jest result helpers for old style commands", async () => {
+    xapi.command
+      .mockReturnValueOnce("Dial", { status: "returned" })
+      .mockResolvedValueOnce("Dial", { status: "resolved-once" })
+      .mockRejectedValueOnce("Dial", { code: 9001, message: "rejected-once" });
+
+    await expect(xapi.command("Audio Volume Set", { Level: 20 })).resolves.toEqual({
+      status: "OK",
+    });
+    await expect(xapi.command("Dial", { Number: "1000" })).resolves.toEqual({
+      status: "returned",
+    });
+    await expect(xapi.command("Dial", { Number: "1001" })).resolves.toEqual({
+      status: "resolved-once",
+    });
+    await expect(xapi.command("Dial", { Number: "1002" })).rejects.toEqual({
+      code: 9001,
+      message: "rejected-once",
+    });
+    await expect(xapi.command("Dial", { Number: "1003" })).resolves.toEqual({
+      status: "OK",
+    });
+  });
+
+  it("supports path-scoped persistent Jest helpers for old style commands", async () => {
+    xapi.command.mockImplementation("Dial", (params) => ({
+      dialed: (params as { Number?: string }).Number,
+    }));
+
+    await expect(xapi.command("Dial", { Number: "2000" })).resolves.toEqual({
+      dialed: "2000",
+    });
+
+    xapi.reset();
+    xapi.command.mockResolvedValue("Dial", { status: "resolved" });
+
+    await expect(xapi.command("Dial", { Number: "2001" })).resolves.toEqual({
+      status: "resolved",
+    });
+
+    xapi.reset();
+    xapi.command.mockRejectedValue("Dial", { code: 9002, message: "rejected" });
+
+    await expect(xapi.command("Dial", { Number: "2002" })).rejects.toEqual({
+      code: 9002,
+      message: "rejected",
+    });
+  });
+
+  it("keeps the standard Jest mockImplementationOnce form on old style commands", async () => {
+    xapi.command.mockImplementationOnce(async (path: unknown, params: unknown) => ({
+      params,
+      path,
+    }));
+
+    await expect(xapi.command("Dial", { Number: "1234" })).resolves.toEqual({
+      params: { Number: "1234" },
+      path: "Dial",
+    });
+  });
+
   it("returns schema-backed doc results for rooted doc paths", async () => {
-    await expect(xapi.doc("Status/Audio/Volume")).resolves.toEqual(
+    await expect(xapi.doc("Status Audio Volume")).resolves.toEqual(
       expect.objectContaining({
         ValueSpace: expect.objectContaining({
           type: "Integer",
@@ -116,13 +250,6 @@ describe("Lowercase RoomOS APIs", () => {
         read: expect.any(String),
       }),
     );
-    await expect(xapi.doc("Status Audio Volume")).resolves.toEqual(
-      expect.objectContaining({
-        ValueSpace: expect.objectContaining({
-          type: "Integer",
-        }),
-      }),
-    );
     await expect(xapi.doc(["Status", "Audio", "Volume"])).resolves.toEqual(
       expect.objectContaining({
         ValueSpace: expect.objectContaining({
@@ -130,7 +257,7 @@ describe("Lowercase RoomOS APIs", () => {
         }),
       }),
     );
-    await expect(xapi.doc("Config/SystemUnit/Name")).resolves.toEqual(
+    await expect(xapi.doc("Config SystemUnit Name")).resolves.toEqual(
       expect.objectContaining({
         ValueSpace: expect.objectContaining({
           default: "",
@@ -142,7 +269,7 @@ describe("Lowercase RoomOS APIs", () => {
         role: expect.any(String),
       }),
     );
-    await expect(xapi.doc("Configuration/SystemUnit/Name")).resolves.toEqual(
+    await expect(xapi.doc("Configuration SystemUnit Name")).resolves.toEqual(
       expect.objectContaining({
         ValueSpace: expect.objectContaining({
           default: "",
@@ -151,7 +278,7 @@ describe("Lowercase RoomOS APIs", () => {
       }),
     );
     await expect(
-      xapi.doc("Command/UserInterface/Message/Alert/Display"),
+      xapi.doc("Command UserInterface Message Alert Display"),
     ).resolves.toEqual(
       expect.objectContaining({
         Duration: expect.any(Object),
@@ -165,7 +292,7 @@ describe("Lowercase RoomOS APIs", () => {
       }),
     );
     await expect(
-      xapi.doc("Event/UserInterface/Extensions/Widget/Action"),
+      xapi.doc("Event UserInterface Extensions Widget Action"),
     ).resolves.toEqual(
       expect.objectContaining({
         Value: expect.any(Object),
@@ -178,23 +305,23 @@ describe("Lowercase RoomOS APIs", () => {
     );
   });
 
-  it("registers on and once listeners and returns unsubscribe functions", () => {
+  it("registers on and once listeners and returns unsubscribe functions", async () => {
     const statusHandler = jest.fn();
     const configHandler = jest.fn();
     const eventHandler = jest.fn();
 
-    const unsubscribeStatus = xapi.status.on("Audio/Volume", statusHandler);
+    const unsubscribeStatus = xapi.status.on("Audio Volume", statusHandler);
     xapi.config.once("Audio DefaultVolume", configHandler);
-    const unsubscribeEvent = xapi.event.on("UserInterface/Extensions/Widget/Action", eventHandler);
+    const unsubscribeEvent = xapi.event.on("UserInterface Extensions Widget Action", eventHandler);
 
-    xapi.emitStatus("Audio Volume", 30);
-    xapi.emitConfig("Audio/DefaultVolume", 100);
-    xapi.emitConfig("Audio/DefaultVolume", 0);
+    xapi.setStatus("Audio Volume", 30);
+    await xapi.config.set("Audio DefaultVolume", 100);
+    await xapi.config.set("Audio DefaultVolume", 0);
     xapi.emitEvent("UserInterface Extensions Widget Action", { WidgetId: "speed" });
 
     unsubscribeStatus();
     unsubscribeEvent();
-    xapi.emitStatus("Audio Volume", 31);
+    xapi.setStatus("Audio Volume", 31);
     xapi.emitEvent("UserInterface Extensions Widget Action", { WidgetId: "ignored" });
 
     expect(statusHandler).toHaveBeenCalledTimes(1);
@@ -223,10 +350,243 @@ describe("Lowercase RoomOS APIs", () => {
   });
 });
 
-describe("Uppercase proxy routing", () => {
-  it("routes command proxies through xapi.command", async () => {
+describe("New style and old style API parity", () => {
+  it.each([
+    {
+      getValue: () => xapi.Status.Audio.Volume.get(),
+      name: "new style status path",
+      setValue: () => xapi.Status.Audio.Volume.set(20),
+    },
+    {
+      getValue: () => xapi.status.get("Audio Volume"),
+      name: "old style status path",
+      setValue: () => xapi.setStatus("Audio Volume", 20),
+    },
+  ])("sets and reads status values with $name", async ({ getValue, setValue }) => {
+    setValue();
+
+    await expect(getValue()).resolves.toBe(20);
+  });
+
+  it.each([
+    {
+      getValue: () => xapi.Config.Audio.DefaultVolume.get(),
+      name: "new style config path",
+      setValue: () => xapi.Config.Audio.DefaultVolume.set(100),
+    },
+    {
+      getValue: () => xapi.config.get("Audio DefaultVolume"),
+      name: "old style config path",
+      setValue: () => xapi.config.set("Audio DefaultVolume", 100),
+    },
+  ])("sets and reads config values with $name", async ({ getValue, setValue }) => {
+    await setValue();
+
+    await expect(getValue()).resolves.toBe(100);
+  });
+
+  it.each([
+    {
+      name: "new style command path",
+      runCommand: () => xapi.Command.Dial({ Number: "1234" }),
+    },
+    {
+      name: "old style command path",
+      runCommand: () => xapi.command("Dial", { Number: "1234" }),
+    },
+  ])("uses mocked command results with $name", async ({ runCommand }) => {
     xapi.setCommandResult("Dial", { status: "dialed" });
-    xapi.setCommandResult("UserInterface/Message/Alert/Display", { status: "displayed" });
+
+    await expect(runCommand()).resolves.toEqual({ status: "dialed" });
+  });
+
+  it.each([
+    {
+      name: "new style command path",
+      runInvalidCommand: () => xapi.Command.Audio.Volume.Set({ Level: 120 }),
+      runValidCommand: () => xapi.Command.Audio.Volume.Set({ Level: 20 }),
+    },
+    {
+      name: "old style command path",
+      runInvalidCommand: () => xapi.command("Audio Volume Set", { Level: 120 }),
+      runValidCommand: () => xapi.command("Audio Volume Set", { Level: 20 }),
+    },
+  ])("validates schema command arguments with $name", async ({
+    runInvalidCommand,
+    runValidCommand,
+  }) => {
+    await expect(runValidCommand()).resolves.toEqual({ status: "OK" });
+    await expect(runInvalidCommand()).rejects.toEqual({
+      code: 4,
+      message: "Invalid or missing parameters",
+    });
+  });
+
+  it.each([
+    {
+      emitValue: (payload: unknown) =>
+        xapi.Event.UserInterface.Extensions.Widget.Action.emit(payload),
+      name: "new style event path",
+      subscribe: (listener: (payload: unknown) => void) =>
+        xapi.Event.UserInterface.Extensions.Widget.Action.on(listener),
+    },
+    {
+      emitValue: (payload: unknown) =>
+        xapi.emitEvent("UserInterface Extensions Widget Action", payload),
+      name: "old style event path",
+      subscribe: (listener: (payload: unknown) => void) =>
+        xapi.event.on("UserInterface Extensions Widget Action", listener),
+    },
+  ])("subscribes and emits events with $name", ({ emitValue, subscribe }) => {
+    const handler = jest.fn();
+    const payload = { Type: "pressed", WidgetId: "speed" };
+
+    const unsubscribe = subscribe(handler);
+    emitValue(payload);
+    unsubscribe();
+    emitValue({ Type: "ignored", WidgetId: "speed" });
+
+    expect(handler).toHaveBeenCalledTimes(1);
+    expect(handler).toHaveBeenCalledWith(payload);
+  });
+
+  it.each([
+    {
+      emitValue: () => xapi.Status.Audio.Volume.set(21),
+      name: "new style status subscription",
+      subscribe: (listener: (payload: unknown) => void) =>
+        xapi.Status.Audio.Volume.on(listener),
+    },
+    {
+      emitValue: () => xapi.setStatus("Audio Volume", 21),
+      name: "old style status subscription",
+      subscribe: (listener: (payload: unknown) => void) =>
+        xapi.status.on("Audio Volume", listener),
+    },
+  ])("notifies status listeners with $name", ({ emitValue, subscribe }) => {
+    const handler = jest.fn();
+
+    const unsubscribe = subscribe(handler);
+    emitValue();
+    unsubscribe();
+    emitValue();
+
+    expect(handler).toHaveBeenCalledTimes(1);
+    expect(handler).toHaveBeenCalledWith(21);
+  });
+
+  it.each([
+    {
+      emitValue: () => xapi.Config.Audio.DefaultVolume.set(100),
+      name: "new style config subscription",
+      subscribe: (listener: (payload: unknown) => void) =>
+        xapi.Config.Audio.DefaultVolume.on(listener),
+    },
+    {
+      emitValue: () => xapi.config.set("Audio DefaultVolume", 100),
+      name: "old style config subscription",
+      subscribe: (listener: (payload: unknown) => void) =>
+        xapi.config.on("Audio DefaultVolume", listener),
+    },
+  ])("notifies config listeners with $name", async ({ emitValue, subscribe }) => {
+    const handler = jest.fn();
+
+    const unsubscribe = subscribe(handler);
+    await emitValue();
+    unsubscribe();
+    await emitValue();
+
+    expect(handler).toHaveBeenCalledTimes(1);
+    expect(handler).toHaveBeenCalledWith(100);
+  });
+
+  it.each([
+    {
+      name: "new style status path",
+      readValue: () => xapi.Status.Not.A.Real.Status.get(),
+    },
+    {
+      name: "old style status path",
+      readValue: () => xapi.status.get("Not A Real Status"),
+    },
+  ])("rejects invalid status paths with $name", async ({ readValue }) => {
+    await expect(readValue()).rejects.toEqual({
+      code: 3,
+      message: "No match on address expression",
+    });
+  });
+
+  it.each([
+    {
+      name: "new style config path",
+      readValue: () => xapi.Config.Not.A.Real.Config.get(),
+    },
+    {
+      name: "old style config path",
+      readValue: () => xapi.config.get("Not A Real Config"),
+    },
+  ])("rejects invalid config paths with $name", async ({ readValue }) => {
+    await expect(readValue()).rejects.toEqual({
+      code: 3,
+      message: "No match on address expression",
+    });
+  });
+
+  it("shares cached command mocks between new style and old style calls", async () => {
+    xapi.Command.Dial.mockResolvedValueOnce({ status: "from-new-style-mock" });
+
+    await expect(xapi.command("Dial", { Number: "1234" })).resolves.toEqual({
+      status: "from-new-style-mock",
+    });
+    expect(xapi.Command.Dial).toHaveBeenCalledWith({ Number: "1234" });
+
+    xapi.command.mockResolvedValueOnce("Dial", { status: "from-old-style-mock" });
+
+    await expect(xapi.Command.Dial({ Number: "5678" })).resolves.toEqual({
+      status: "from-old-style-mock",
+    });
+    expect(xapi.command).toHaveBeenLastCalledWith(
+      "Dial",
+      { Number: "5678" },
+      undefined,
+    );
+  });
+
+  it("shares cached operation mocks between new style and old style status, config, and event calls", async () => {
+    const statusHandler = jest.fn();
+    const eventHandler = jest.fn();
+    const eventPayload = { Type: "pressed", WidgetId: "speed" };
+
+    xapi.setStatus("Audio Volume", 42);
+    await xapi.status.get("Audio Volume");
+    xapi.status.on("Audio Volume", statusHandler);
+
+    await xapi.config.set("Audio DefaultVolume", 100);
+
+    xapi.event.on("UserInterface Extensions Widget Action", eventHandler);
+    xapi.emitEvent("UserInterface Extensions Widget Action", eventPayload);
+
+    xapi.Status.Call[7].Status.set("Connected");
+    xapi.removeStatus("Call 7");
+
+    expect(xapi.Status.Audio.Volume.set).toHaveBeenCalledWith(42);
+    expect(xapi.Status.Audio.Volume.get).toHaveBeenCalledWith();
+    expect(xapi.Status.Audio.Volume.on).toHaveBeenCalledWith(statusHandler);
+    expect(xapi.Config.Audio.DefaultVolume.set).toHaveBeenCalledWith(100);
+    expect(
+      xapi.Event.UserInterface.Extensions.Widget.Action.on,
+    ).toHaveBeenCalledWith(eventHandler);
+    expect(
+      xapi.Event.UserInterface.Extensions.Widget.Action.emit,
+    ).toHaveBeenCalledWith(eventPayload);
+    expect(xapi.Status.Call[7].remove).toHaveBeenCalledWith();
+  });
+});
+
+describe("New style routing", () => {
+  it("routes new style commands through xapi.command", async () => {
+    xapi.setCommandResult("Dial", { status: "dialed" });
+    xapi.setCommandResult("UserInterface Message Alert Display", { status: "displayed" });
 
     await xapi.Command.Dial({ Number: "1234" });
     await xapi.Command.UserInterface.Message.Alert.Display({ Title: "Hi" });
@@ -240,7 +600,7 @@ describe("Uppercase proxy routing", () => {
     );
   });
 
-  it("routes status, config, and event proxies through lowercase components", async () => {
+  it("routes new style status, config, and event paths through lowercase components", async () => {
     const statusHandler = jest.fn();
     const configHandler = jest.fn();
     const eventHandler = jest.fn();
@@ -261,24 +621,6 @@ describe("Uppercase proxy routing", () => {
       "UserInterface/Extensions/Widget/Action",
       eventHandler,
     );
-  });
-});
-
-describe("Independent mock instances", () => {
-  it("does not share listeners, values, or call history across created instances", async () => {
-    const first = createXapi();
-    const second = createXapi();
-    const secondHandler = jest.fn();
-
-    first.setStatus("Audio/Volume", 10);
-    second.status.on("Audio/Volume", secondHandler);
-    first.emitStatus("Audio/Volume", 11);
-
-    await expect(first.status.get("Audio/Volume")).resolves.toBe(11);
-    await expect(second.status.get("Audio/Volume")).resolves.toBe("0");
-    expect(secondHandler).not.toHaveBeenCalled();
-    expect(first.callHistory.status.on).toHaveLength(0);
-    expect(second.callHistory.status.on).toHaveLength(1);
   });
 });
 
@@ -361,12 +703,18 @@ describe("Status paths", () => {
 
     xapi.Status.Call.on(handler);
     xapi.Status.Call[7].Direction.set("Incoming");
-    xapi.removeStatus("Call.7");
+    xapi.Status.Call[7].remove();
+
+    expect(xapi.Status.Call[7].remove).toHaveBeenCalledWith();
 
     expect(handler).toHaveBeenLastCalledWith({
       ghost: "true",
       id: "7",
     });
+  });
+
+  it("returns false when a new style status remove has no stored branch", () => {
+    expect(xapi.Status.Call[999].remove()).toBe(false);
   });
 
   it("supports root status subscriptions with relative path payloads", () => {
@@ -593,10 +941,18 @@ describe("Invalid paths", () => {
       code: 3,
       message: "Unknown command",
     });
+    await expect(xapi.command("NotARealCommand")).rejects.toEqual({
+      code: 3,
+      message: "Unknown command",
+    });
   });
 
   it("rejects lowercase invalid command paths with a method-not-found payload", async () => {
     await expect(xapi.Command.invalid()).rejects.toEqual({
+      code: 3,
+      message: "Unknown command",
+    });
+    await expect(xapi.command("invalid")).rejects.toEqual({
       code: 3,
       message: "Unknown command",
     });
@@ -606,6 +962,7 @@ describe("Invalid paths", () => {
 describe("Product-specific xAPI availability", () => {
   it("defaults Status.SystemUnit.ProductPlatform to Desk Pro", async () => {
     expect(await xapi.Status.SystemUnit.ProductPlatform.get()).toBe("Desk Pro");
+    await expect(xapi.status.get("SystemUnit ProductPlatform")).resolves.toBe("Desk Pro");
   });
 
   it("defaults software statuses from the latest schema for the selected product", async () => {
@@ -615,6 +972,12 @@ describe("Product-specific xAPI availability", () => {
       xapi.Status.SystemUnit.Software.DisplayName.get(),
     ).resolves.toBe(expectedSoftware["Status.SystemUnit.Software.DisplayName"]);
     await expect(xapi.Status.SystemUnit.Software.Version.get()).resolves.toBe(
+      expectedSoftware["Status.SystemUnit.Software.Version"],
+    );
+    await expect(
+      xapi.status.get("SystemUnit Software DisplayName"),
+    ).resolves.toBe(expectedSoftware["Status.SystemUnit.Software.DisplayName"]);
+    await expect(xapi.status.get("SystemUnit Software Version")).resolves.toBe(
       expectedSoftware["Status.SystemUnit.Software.Version"],
     );
     await expect(xapi.Status.SystemUnit.Software.get()).resolves.toEqual(
@@ -638,7 +1001,7 @@ describe("Product-specific xAPI availability", () => {
   });
 
   it("prefers explicitly set software statuses over schema defaults", async () => {
-    xapi.setStatus("SystemUnit/Software/Version", "ce-custom");
+    xapi.setStatus("SystemUnit Software Version", "ce-custom");
 
     await expect(xapi.Status.SystemUnit.Software.Version.get()).resolves.toBe(
       "ce-custom",
@@ -660,7 +1023,7 @@ describe("Product-specific xAPI availability", () => {
   });
 
   it("keeps Desk Pro product filtering if ProductPlatform is removed", async () => {
-    xapi.removeStatus("SystemUnit.ProductPlatform");
+    xapi.removeStatus("SystemUnit ProductPlatform");
 
     await expect(
       xapi.Config.Video.Output.Connector[3].MonitorRole.set("Auto"),
@@ -676,6 +1039,9 @@ describe("Product-specific xAPI availability", () => {
     await expect(
       xapi.Config.Video.Output.Connector[1].MonitorRole.set("Auto"),
     ).resolves.toBe("Auto");
+    await expect(
+      xapi.config.set("Video Output Connector 1 MonitorRole", "Auto"),
+    ).resolves.toBe("Auto");
   });
 
   it("rejects configuration paths that are unavailable on the selected product", async () => {
@@ -687,6 +1053,12 @@ describe("Product-specific xAPI availability", () => {
       code: 3,
       message: "No match on address expression",
     });
+    await expect(
+      xapi.config.set("Video Output Connector 3 MonitorRole", "Auto"),
+    ).rejects.toEqual({
+      code: 3,
+      message: "No match on address expression",
+    });
   });
 
   it("rejects configuration values that are unavailable on the selected product", async () => {
@@ -694,6 +1066,15 @@ describe("Product-specific xAPI availability", () => {
 
     await expect(
       xapi.Config.Video.Output.Connector[1].MonitorRole.set("PresentationOnly"),
+    ).rejects.toEqual({
+      code: 4,
+      message: "Invalid or missing parameters",
+    });
+    await expect(
+      xapi.config.set(
+        "Video Output Connector 1 MonitorRole",
+        "PresentationOnly",
+      ),
     ).rejects.toEqual({
       code: 4,
       message: "Invalid or missing parameters",
@@ -769,7 +1150,8 @@ describe("Product-specific xAPI availability", () => {
     );
     await expect(xapi.Config.SystemUnit.Name.get()).resolves.toEqual(expect.any(String));
     await expect(xapi.Config.Video.Output.Connector.get()).resolves.toEqual(expect.any(Array));
-    await expect(xapi.doc("Status/Audio/Volume")).resolves.toEqual(
+    await expect(xapi.config.get("Video Output Connector")).resolves.toEqual(expect.any(Array));
+    await expect(xapi.doc("Status Audio Volume")).resolves.toEqual(
       expect.objectContaining({
         ValueSpace: expect.any(Object),
       }),
@@ -787,6 +1169,10 @@ describe("Product-specific xAPI availability", () => {
     xapi.Status.SystemUnit.ProductPlatform.set("Desk Pro");
 
     await expect(xapi.Command.Audio.Equalizer.List()).rejects.toEqual({
+      code: 3,
+      message: "Unknown command",
+    });
+    await expect(xapi.command("Audio Equalizer List")).rejects.toEqual({
       code: 3,
       message: "Unknown command",
     });

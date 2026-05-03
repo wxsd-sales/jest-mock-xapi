@@ -1,0 +1,32 @@
+{
+  "$schema": "https://typedoc.org/schema.json",
+  "entryPoints": ["src/index.ts"],
+  "tsconfig": "tsconfig.build.json",
+  "out": "docs",
+  "readme": "README.md",
+  "name": "jest-mock-xapi",
+  "includeVersion": true,
+  "exclude": ["examples/**", "scripts/**", "src/tests/**"],
+  "excludeExternals": true,
+  "excludePrivate": true,
+  "excludeInternal": true,
+  "groupOrder": [
+    "xapi.Command",
+    "xapi.Config",
+    "xapi.Status",
+    "xapi.Event",
+    "Old style xapi.command / xapi.config / xapi.status / xapi.event",
+    "Runtime surfaces",
+    "Test-only mock controls",
+    "Jest mock controls and assertions",
+    "Type helpers",
+    "*"
+  ],
+  "visibilityFilters": {
+    "protected": false,
+    "private": false,
+    "inherited": true,
+    "external": false
+  },
+  "githubPages": true
+}

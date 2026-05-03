@@ -1,7 +1,7 @@
 import { jest } from "@jest/globals";
 import { resolveSchemaChild, type SchemaNode } from "./schema.ts";
 
-type ProxyOperation = "call" | "emit" | "get" | "on" | "once" | "set";
+type ProxyOperation = "call" | "emit" | "get" | "on" | "once" | "remove" | "set";
 
 interface XapiErrorPayload {
   code: number;
@@ -29,6 +29,7 @@ interface SchemaProxyOptions {
 
 const passthroughProps = new Set([
   "_isMockFunction",
+  "_protoImpl",
   "getMockImplementation",
   "mock",
   "mockClear",
@@ -160,7 +161,11 @@ export default function proxy(options: SchemaProxyOptions) {
 
       if (
         allowedMethods.includes(prop as ProxyOperation) &&
-        (node.terminal || prop === "get" || prop === "on" || prop === "once")
+        (node.terminal ||
+          prop === "get" ||
+          prop === "on" ||
+          prop === "once" ||
+          prop === "remove")
       ) {
         return proxy({
           cache,

@@ -9,7 +9,7 @@
   "devDependencies": {
     "@jest/globals": "^30.3.0",
     "jest": "^30.3.0",
-    "jest-mock-xapi": "^1.0.4"
+    "jest-mock-xapi": "^1.0.5"
   },
   "jest": {
     "rootDir": ".",

@@ -46,7 +46,9 @@ function getVersionParts(schemaName: string) {
     return [];
   }
 
-  return versionMatch[1].split(".").map((part) => Number.parseInt(part, 10));
+  const version = versionMatch[1];
+
+  return version ? version.split(".").map((part) => Number.parseInt(part, 10)) : [];
 }
 
 function getMajorVersion(schemaName: string) {

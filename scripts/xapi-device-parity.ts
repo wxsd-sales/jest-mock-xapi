@@ -3,17 +3,149 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { jest, test } from "@jest/globals";
 import jsxapi from "jsxapi";
-import { createXapi } from "../dist/index.js";
+import type { MockXapi as MockXapiInstance } from "../src/xapi.ts";
+
+type XapiLike = any;
+type CompareMode =
+  | "array-shape"
+  | "error-format"
+  | "exact"
+  | "format"
+  | "function"
+  | "object-keys";
+type EnvMap = Record<string, string | undefined>;
+
+interface ProbeContext {
+  xapi: XapiLike;
+}
+
+interface ProbeDefinition {
+  compare: CompareMode;
+  name: string;
+  run: (context: ProbeContext) => unknown;
+}
+
+interface SerializedValue {
+  value?: unknown;
+  valueKind: string;
+}
+
+interface SerializedError {
+  code?: unknown;
+  message: string;
+  name?: string;
+  valueKind?: string;
+}
+
+type ProbeResult =
+  | ({
+      name: string;
+      ok: true;
+    } & SerializedValue)
+  | {
+      error: SerializedError;
+      name: string;
+      ok: false;
+    };
+
+interface ProbeReport {
+  generatedAt: string;
+  results: ProbeResult[];
+}
+
+interface ComparisonResult {
+  details: string;
+  name: string;
+  pass: boolean;
+}
+
+interface Credentials {
+  password?: string;
+  username?: string;
+}
+
+interface DeviceInput extends Credentials {
+  address?: unknown;
+  host?: unknown;
+  name?: unknown;
+  pass?: unknown;
+  port?: unknown;
+  protocol?: unknown;
+  user?: unknown;
+  [key: string]: unknown;
+}
+
+interface Device {
+  address: string;
+  password: string;
+  port?: number;
+  username: string;
+}
+
+interface ConnectionResult {
+  url: string;
+  xapi: XapiLike;
+}
+
+interface SoftwareInfo {
+  displayName?: string;
+  majorVersion: string;
+  version?: string;
+}
+
+interface DeviceComparisonReport {
+  comparisons?: ComparisonResult[];
+  connectionUrl?: string;
+  device: Device;
+  error?: SerializedError;
+  liveReport?: ProbeReport;
+  mockReport?: ProbeReport;
+  productPlatform?: string;
+  software?: SoftwareInfo;
+}
+
+interface SchemaMetadata {
+  schemas?: Array<{
+    majorVersion?: number;
+    name?: string;
+  }>;
+}
+
+interface ValidationRow {
+  hardware: string;
+  result: string;
+  roomOsMajor: string;
+  schema: string;
+}
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const defaultEnvPath = resolve(repoRoot, ".env");
 const readmePath = resolve(repoRoot, "README.md");
+const schemaMetaPath = resolve(repoRoot, "src/schemas/schema.meta.json");
 const defaultConnectTimeoutMs = 20000;
 const defaultTestTimeoutMs = 120000;
 const readmeResultsStartMarker = "<!-- roomos-parity-results:start -->";
 const readmeResultsEndMarker = "<!-- roomos-parity-results:end -->";
+const builtPackageEntryPoint = "../dist/index.js";
+let schemaMetadata: SchemaMetadata | undefined;
 
-function getValueKind(value) {
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
+function getErrorCode(error: unknown) {
+  return isRecord(error) ? error.code : undefined;
+}
+
+function getErrorMessage(error: unknown) {
+  if (isRecord(error) && typeof error.message === "string") {
+    return error.message;
+  }
+
+  return String(error);
+}
+
+function getValueKind(value: unknown) {
   if (Array.isArray(value)) {
     return "array";
   }
@@ -25,7 +157,7 @@ function getValueKind(value) {
   return typeof value;
 }
 
-function serializeValue(value) {
+function serializeValue(value: unknown): SerializedValue {
   const valueKind = getValueKind(value);
 
   if (valueKind === "undefined") {
@@ -45,7 +177,7 @@ function serializeValue(value) {
   };
 }
 
-function serializeError(error) {
+function serializeError(error: unknown): SerializedError {
   if (typeof error !== "object" || error === null) {
     return {
       message: String(error),
@@ -53,14 +185,28 @@ function serializeError(error) {
     };
   }
 
-  return {
-    code: error.code,
-    message: error.message ?? String(error),
-    name: error.name,
+  const errorRecord = error as Record<string, unknown>;
+
+  const serializedError: SerializedError = {
+    code: errorRecord.code,
+    message:
+      typeof errorRecord.message === "string"
+        ? errorRecord.message
+        : String(error),
   };
+
+  if (typeof errorRecord.name === "string") {
+    serializedError.name = errorRecord.name;
+  }
+
+  return serializedError;
 }
 
-async function captureProbe(name, invoke, context) {
+async function captureProbe(
+  name: string,
+  invoke: ProbeDefinition["run"],
+  context: ProbeContext,
+): Promise<ProbeResult> {
   try {
     const value = await invoke(context);
 
@@ -78,12 +224,15 @@ async function captureProbe(name, invoke, context) {
   }
 }
 
-function createSubscriptionProbe(subscribe) {
-  return (context) => {
+function createSubscriptionProbe(
+  subscribe: (
+    xapi: XapiLike,
+    listener: (payload: unknown) => void,
+  ) => unknown,
+) {
+  return (context: ProbeContext) => {
     const unsubscribe = subscribe(context.xapi, () => undefined);
-    const unsubscribeKind = typeof unsubscribe;
-
-    if (unsubscribeKind === "function") {
+    if (typeof unsubscribe === "function") {
       unsubscribe();
     }
 
@@ -91,7 +240,7 @@ function createSubscriptionProbe(subscribe) {
   };
 }
 
-function createAlertCommandParams(text) {
+function createAlertCommandParams(text: string) {
   return {
     Duration: 1,
     Text: text,
@@ -99,8 +248,14 @@ function createAlertCommandParams(text) {
   };
 }
 
-function createProbeDefinitions({ includeCommand, includeConfigSet }) {
-  const probes = [
+function createProbeDefinitions({
+  includeCommand,
+  includeConfigSet,
+}: {
+  includeCommand: boolean;
+  includeConfigSet: boolean;
+}) {
+  const probes: ProbeDefinition[] = [
     {
       compare: "exact",
       name: "xapi.version",
@@ -118,8 +273,8 @@ function createProbeDefinitions({ includeCommand, includeConfigSet }) {
     },
     {
       compare: "exact",
-      name: "xapi.status.get(SystemUnit/ProductPlatform)",
-      run: ({ xapi }) => xapi.status.get("SystemUnit/ProductPlatform"),
+      name: "xapi.status.get(SystemUnit ProductPlatform)",
+      run: ({ xapi }) => xapi.status.get("SystemUnit ProductPlatform"),
     },
     {
       compare: "format",
@@ -138,8 +293,8 @@ function createProbeDefinitions({ includeCommand, includeConfigSet }) {
     },
     {
       compare: "format",
-      name: "xapi.config.get(SystemUnit/Name)",
-      run: ({ xapi }) => xapi.config.get(["SystemUnit", "Name"]),
+      name: "xapi.config.get(SystemUnit Name)",
+      run: ({ xapi }) => xapi.config.get("SystemUnit Name"),
     },
     {
       compare: "array-shape",
@@ -147,9 +302,9 @@ function createProbeDefinitions({ includeCommand, includeConfigSet }) {
       run: ({ xapi }) => xapi.Config.Video.Output.Connector.get(),
     },
     {
-      compare: "format",
-      name: "xapi.doc(Status/Audio/Volume)",
-      run: ({ xapi }) => xapi.doc("Status/Audio/Volume"),
+      compare: "array-shape",
+      name: "xapi.config.get(Video Output Connector)",
+      run: ({ xapi }) => xapi.config.get("Video Output Connector"),
     },
     {
       compare: "format",
@@ -163,45 +318,65 @@ function createProbeDefinitions({ includeCommand, includeConfigSet }) {
     },
     {
       compare: "format",
-      name: "xapi.doc(Config/SystemUnit/Name)",
-      run: ({ xapi }) => xapi.doc("Config/SystemUnit/Name"),
+      name: "xapi.doc(Config SystemUnit Name)",
+      run: ({ xapi }) => xapi.doc("Config SystemUnit Name"),
     },
     {
       compare: "format",
-      name: "xapi.doc(Configuration/SystemUnit/Name)",
-      run: ({ xapi }) => xapi.doc("Configuration/SystemUnit/Name"),
+      name: "xapi.doc(Configuration SystemUnit Name)",
+      run: ({ xapi }) => xapi.doc("Configuration SystemUnit Name"),
     },
     {
       compare: "format",
-      name: "xapi.doc(Command/UserInterface/Message/Alert/Display)",
+      name: "xapi.doc(Command UserInterface Message Alert Display)",
       run: ({ xapi }) =>
-        xapi.doc("Command/UserInterface/Message/Alert/Display"),
+        xapi.doc("Command UserInterface Message Alert Display"),
     },
     {
       compare: "format",
-      name: "xapi.doc(Event/UserInterface/Extensions/Widget/Action)",
+      name: "xapi.doc(Event UserInterface Extensions Widget Action)",
       run: ({ xapi }) =>
-        xapi.doc("Event/UserInterface/Extensions/Widget/Action"),
+        xapi.doc("Event UserInterface Extensions Widget Action"),
     },
     {
       compare: "error-format",
-      name: "xapi.status.get(Not/A/Real/Status)",
-      run: ({ xapi }) => xapi.status.get("Not/A/Real/Status"),
+      name: "xapi.Status.Not.A.Real.Status.get",
+      run: ({ xapi }) => xapi.Status.Not.A.Real.Status.get(),
     },
     {
       compare: "error-format",
-      name: "xapi.config.get(Not/A/Real/Config)",
-      run: ({ xapi }) => xapi.config.get("Not/A/Real/Config"),
+      name: "xapi.status.get(Not A Real Status)",
+      run: ({ xapi }) => xapi.status.get("Not A Real Status"),
     },
     {
       compare: "error-format",
-      name: "xapi.command(Not/A/Real/Command)",
-      run: ({ xapi }) => xapi.command("Not/A/Real/Command"),
+      name: "xapi.Config.Not.A.Real.Config.get",
+      run: ({ xapi }) => xapi.Config.Not.A.Real.Config.get(),
     },
     {
       compare: "error-format",
-      name: "xapi.command(Audio/Volume/Set,bad-level)",
-      run: ({ xapi }) => xapi.command("Audio/Volume/Set", { Level: 120 }),
+      name: "xapi.config.get(Not A Real Config)",
+      run: ({ xapi }) => xapi.config.get("Not A Real Config"),
+    },
+    {
+      compare: "error-format",
+      name: "xapi.Command.Not.A.Real.Command",
+      run: ({ xapi }) => xapi.Command.Not.A.Real.Command(),
+    },
+    {
+      compare: "error-format",
+      name: "xapi.command(Not A Real Command)",
+      run: ({ xapi }) => xapi.command("Not A Real Command"),
+    },
+    {
+      compare: "error-format",
+      name: "xapi.Command.Audio.Volume.Set(bad-level)",
+      run: ({ xapi }) => xapi.Command.Audio.Volume.Set({ Level: 120 }),
+    },
+    {
+      compare: "error-format",
+      name: "xapi.command(Audio Volume Set,bad-level)",
+      run: ({ xapi }) => xapi.command("Audio Volume Set", { Level: 120 }),
     },
     {
       compare: "error-format",
@@ -217,16 +392,30 @@ function createProbeDefinitions({ includeCommand, includeConfigSet }) {
     },
     {
       compare: "function",
-      name: "xapi.status.once(Audio/Volume)",
+      name: "xapi.status.on(Audio Volume)",
       run: createSubscriptionProbe((xapi, listener) =>
-        xapi.status.once("Audio/Volume", listener),
+        xapi.status.on("Audio Volume", listener),
       ),
     },
     {
       compare: "function",
-      name: "xapi.config.on(SystemUnit/Name)",
+      name: "xapi.Status.Audio.Volume.once",
       run: createSubscriptionProbe((xapi, listener) =>
-        xapi.config.on("SystemUnit/Name", listener),
+        xapi.Status.Audio.Volume.once(listener),
+      ),
+    },
+    {
+      compare: "function",
+      name: "xapi.status.once(Audio Volume)",
+      run: createSubscriptionProbe((xapi, listener) =>
+        xapi.status.once("Audio Volume", listener),
+      ),
+    },
+    {
+      compare: "function",
+      name: "xapi.Config.Audio.DefaultVolume.on",
+      run: createSubscriptionProbe((xapi, listener) =>
+        xapi.Config.Audio.DefaultVolume.on(listener),
       ),
     },
     {
@@ -238,9 +427,23 @@ function createProbeDefinitions({ includeCommand, includeConfigSet }) {
     },
     {
       compare: "function",
-      name: "xapi.event.on(UserInterface/Extensions/Widget/Action)",
+      name: "xapi.config.on(Audio DefaultVolume)",
       run: createSubscriptionProbe((xapi, listener) =>
-        xapi.event.on("UserInterface/Extensions/Widget/Action", listener),
+        xapi.config.on("Audio DefaultVolume", listener),
+      ),
+    },
+    {
+      compare: "function",
+      name: "xapi.config.once(Audio DefaultVolume)",
+      run: createSubscriptionProbe((xapi, listener) =>
+        xapi.config.once("Audio DefaultVolume", listener),
+      ),
+    },
+    {
+      compare: "function",
+      name: "xapi.Event.UserInterface.Extensions.Widget.Action.on",
+      run: createSubscriptionProbe((xapi, listener) =>
+        xapi.Event.UserInterface.Extensions.Widget.Action.on(listener),
       ),
     },
     {
@@ -250,15 +453,37 @@ function createProbeDefinitions({ includeCommand, includeConfigSet }) {
         xapi.Event.UserInterface.Extensions.Widget.Action.once(listener),
       ),
     },
+    {
+      compare: "function",
+      name: "xapi.event.on(UserInterface Extensions Widget Action)",
+      run: createSubscriptionProbe((xapi, listener) =>
+        xapi.event.on("UserInterface Extensions Widget Action", listener),
+      ),
+    },
+    {
+      compare: "function",
+      name: "xapi.event.once(UserInterface Extensions Widget Action)",
+      run: createSubscriptionProbe((xapi, listener) =>
+        xapi.event.once("UserInterface Extensions Widget Action", listener),
+      ),
+    },
   ];
 
   if (includeConfigSet) {
     probes.push({
       compare: "format",
-      name: "xapi.config.set(SystemUnit/Name,current)",
+      name: "xapi.Config.SystemUnit.Name.set(current)",
       run: async ({ xapi }) => {
-        const currentName = await xapi.config.get("SystemUnit/Name");
-        return xapi.config.set("SystemUnit/Name", currentName);
+        const currentName = await xapi.Config.SystemUnit.Name.get();
+        return xapi.Config.SystemUnit.Name.set(currentName);
+      },
+    });
+    probes.push({
+      compare: "format",
+      name: "xapi.config.set(SystemUnit Name,current)",
+      run: async ({ xapi }) => {
+        const currentName = await xapi.config.get("SystemUnit Name");
+        return xapi.config.set("SystemUnit Name", currentName);
       },
     });
   }
@@ -266,10 +491,18 @@ function createProbeDefinitions({ includeCommand, includeConfigSet }) {
   if (includeCommand) {
     probes.push({
       compare: "exact",
-      name: "xapi.command(UserInterface/Message/Alert/Display)",
+      name: "xapi.Command.UserInterface.Message.Alert.Display",
+      run: ({ xapi }) =>
+        xapi.Command.UserInterface.Message.Alert.Display(
+          createAlertCommandParams("jest-mock-xapi parity probe"),
+        ),
+    });
+    probes.push({
+      compare: "exact",
+      name: "xapi.command(UserInterface Message Alert Display)",
       run: ({ xapi }) =>
         xapi.command(
-          "UserInterface/Message/Alert/Display",
+          "UserInterface Message Alert Display",
           createAlertCommandParams("jest-mock-xapi parity probe"),
         ),
     });
@@ -278,14 +511,22 @@ function createProbeDefinitions({ includeCommand, includeConfigSet }) {
       name: "xapi.Command.UserInterface.Message.Alert.Clear",
       run: ({ xapi }) => xapi.Command.UserInterface.Message.Alert.Clear(),
     });
+    probes.push({
+      compare: "exact",
+      name: "xapi.command(UserInterface Message Alert Clear)",
+      run: ({ xapi }) => xapi.command("UserInterface Message Alert Clear"),
+    });
   }
 
   return probes;
 }
 
-async function collectReport(xapi, probes) {
+async function collectReport(
+  xapi: XapiLike,
+  probes: ProbeDefinition[],
+): Promise<ProbeReport> {
   const context = { xapi };
-  const results = [];
+  const results: ProbeResult[] = [];
 
   for (const probe of probes) {
     results.push(await captureProbe(probe.name, probe.run, context));
@@ -297,11 +538,11 @@ async function collectReport(xapi, probes) {
   };
 }
 
-function byName(report) {
+function byName(report: ProbeReport) {
   return new Map(report.results.map((result) => [result.name, result]));
 }
 
-function getObjectKeys(value) {
+function getObjectKeys(value: unknown) {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
     return [];
   }
@@ -309,7 +550,7 @@ function getObjectKeys(value) {
   return Object.keys(value).sort();
 }
 
-function getArrayItemShape(value) {
+function getArrayItemShape(value: unknown) {
   if (!Array.isArray(value)) {
     return [];
   }
@@ -317,7 +558,7 @@ function getArrayItemShape(value) {
   return value.map((item) => getObjectKeys(item).join(","));
 }
 
-function describeArrayShape(value) {
+function describeArrayShape(value: unknown) {
   if (!Array.isArray(value)) {
     return "not array";
   }
@@ -327,11 +568,11 @@ function describeArrayShape(value) {
     .join(" ");
 }
 
-function sameJson(a, b) {
+function sameJson(a: unknown, b: unknown) {
   return JSON.stringify(a) === JSON.stringify(b);
 }
 
-function summarizeValue(result) {
+function summarizeValue(result: ProbeResult) {
   if (!result.ok) {
     return `error ${result.error?.code ?? ""} ${result.error?.message ?? ""}`.trim();
   }
@@ -345,7 +586,7 @@ function summarizeValue(result) {
   }
 
   if (result.valueKind === "array") {
-    return `array(${result.value?.length ?? 0})`;
+    return `array(${Array.isArray(result.value) ? result.value.length : 0})`;
   }
 
   if (result.valueKind === "object") {
@@ -355,7 +596,11 @@ function summarizeValue(result) {
   return `${result.valueKind}:${String(result.value)}`;
 }
 
-function compareProbe(probe, liveResult, mockResult) {
+function compareProbe(
+  probe: ProbeDefinition,
+  liveResult: ProbeResult | undefined,
+  mockResult: ProbeResult | undefined,
+): ComparisonResult {
   if (!liveResult) {
     return {
       details: "missing live result",
@@ -405,6 +650,14 @@ function compareProbe(probe, liveResult, mockResult) {
   }
 
   if (!liveResult.ok || !mockResult.ok) {
+    if (liveResult.ok || mockResult.ok) {
+      return {
+        details: `ok mismatch: live ${liveResult.ok}, mock ${mockResult.ok}`,
+        name: probe.name,
+        pass: false,
+      };
+    }
+
     const liveMessageKind = typeof liveResult.error?.message;
     const mockMessageKind = typeof mockResult.error?.message;
     const pass =
@@ -468,6 +721,8 @@ function compareProbe(probe, liveResult, mockResult) {
     const liveShape = getArrayItemShape(liveResult.value);
     const mockShape = getArrayItemShape(mockResult.value);
     const pass =
+      Array.isArray(liveResult.value) &&
+      Array.isArray(mockResult.value) &&
       liveResult.value.length === mockResult.value.length &&
       sameJson(liveShape, mockShape);
 
@@ -499,7 +754,11 @@ function compareProbe(probe, liveResult, mockResult) {
   };
 }
 
-function compareReports(liveReport, mockReport, probes) {
+function compareReports(
+  liveReport: ProbeReport,
+  mockReport: ProbeReport,
+  probes: ProbeDefinition[],
+) {
   const liveResults = byName(liveReport);
   const mockResults = byName(mockReport);
 
@@ -508,12 +767,12 @@ function compareReports(liveReport, mockReport, probes) {
   );
 }
 
-function stripInlineComment(value) {
+function stripInlineComment(value: string) {
   let quote = "";
   let escaped = false;
 
   for (let index = 0; index < value.length; index += 1) {
-    const character = value[index];
+    const character = value[index] ?? "";
 
     if (escaped) {
       escaped = false;
@@ -545,7 +804,7 @@ function stripInlineComment(value) {
   return value.trimEnd();
 }
 
-function unquoteEnvValue(value) {
+function unquoteEnvValue(value: string) {
   const trimmed = value.trim();
   const quote = trimmed[0];
 
@@ -567,8 +826,8 @@ function unquoteEnvValue(value) {
     .replaceAll("\\\\", "\\");
 }
 
-function parseDotEnv(contents) {
-  const env = {};
+function parseDotEnv(contents: string): EnvMap {
+  const env: EnvMap = {};
 
   for (const line of contents.split(/\r?\n/)) {
     const match = /^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)?\s*$/.exec(
@@ -579,7 +838,13 @@ function parseDotEnv(contents) {
       continue;
     }
 
-    const [, key, rawValue = ""] = match;
+    const key = match[1];
+    const rawValue = match[2] ?? "";
+
+    if (!key) {
+      continue;
+    }
+
     const value = stripInlineComment(rawValue);
     env[key] = unquoteEnvValue(value);
   }
@@ -587,7 +852,7 @@ function parseDotEnv(contents) {
   return env;
 }
 
-function loadEnv() {
+function loadEnv(): { env: EnvMap; envPath: string } {
   const envPath = resolve(process.env.ROOMOS_PARITY_ENV ?? defaultEnvPath);
   const fileEnv = existsSync(envPath)
     ? parseDotEnv(readFileSync(envPath, "utf8"))
@@ -602,7 +867,7 @@ function loadEnv() {
   };
 }
 
-function parseBoolean(value, defaultValue) {
+function parseBoolean(value: unknown, defaultValue: boolean) {
   if (typeof value === "undefined" || value === "") {
     return defaultValue;
   }
@@ -610,35 +875,49 @@ function parseBoolean(value, defaultValue) {
   return ["1", "true", "yes", "on"].includes(String(value).toLowerCase());
 }
 
-function parsePositiveInteger(value, defaultValue) {
+function parsePositiveInteger(value: unknown, defaultValue: number) {
   if (typeof value === "undefined" || value === "") {
     return defaultValue;
   }
 
-  const parsed = Number.parseInt(value, 10);
+  const parsed = Number.parseInt(String(value), 10);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : defaultValue;
 }
 
-function getCommonCredentials(env) {
-  return {
-    password: env.ROOMOS_PARITY_PASSWORD ?? env.ROOMOS_PARITY_PASS,
-    username: env.ROOMOS_PARITY_USERNAME ?? env.ROOMOS_PARITY_USER,
-  };
+function getCommonCredentials(env: EnvMap): Credentials {
+  const credentials: Credentials = {};
+  const password = env.ROOMOS_PARITY_PASSWORD ?? env.ROOMOS_PARITY_PASS;
+  const username = env.ROOMOS_PARITY_USERNAME ?? env.ROOMOS_PARITY_USER;
+
+  if (typeof password !== "undefined") {
+    credentials.password = password;
+  }
+
+  if (typeof username !== "undefined") {
+    credentials.username = username;
+  }
+
+  return credentials;
 }
 
-function normalizeDevice(device, label, defaults = {}) {
+function normalizeDevice(
+  device: unknown,
+  label: string,
+  defaults: Credentials = {},
+): Device {
   const normalizedDevice =
     typeof device === "string" ? { address: device } : device;
 
-  if (typeof normalizedDevice !== "object" || normalizedDevice === null) {
+  if (!isRecord(normalizedDevice)) {
     throw new Error(`${label} must be an object or address string.`);
   }
 
-  const address = normalizedDevice.address ?? normalizedDevice.host;
+  const deviceRecord = normalizedDevice as DeviceInput;
+  const address = deviceRecord.address ?? deviceRecord.host;
   const username =
-    normalizedDevice.username ?? normalizedDevice.user ?? defaults.username;
+    deviceRecord.username ?? deviceRecord.user ?? defaults.username;
   const password =
-    normalizedDevice.password ?? normalizedDevice.pass ?? defaults.password;
+    deviceRecord.password ?? deviceRecord.pass ?? defaults.password;
 
   if (!address || !username || typeof password === "undefined") {
     throw new Error(
@@ -646,28 +925,31 @@ function normalizeDevice(device, label, defaults = {}) {
     );
   }
 
-  return {
+  const normalized: Device = {
     address: String(address),
     password: String(password),
-    port: normalizedDevice.port
-      ? Number.parseInt(normalizedDevice.port, 10)
-      : undefined,
     username: String(username),
   };
+
+  if (typeof deviceRecord.port !== "undefined" && deviceRecord.port !== "") {
+    normalized.port = Number.parseInt(String(deviceRecord.port), 10);
+  }
+
+  return normalized;
 }
 
-function parseAddressDevices(env) {
+function parseAddressDevices(env: EnvMap) {
   if (!env.ROOMOS_PARITY_ADDRESSES) {
     return [];
   }
 
-  let addresses;
+  let addresses: unknown;
 
   try {
     addresses = JSON.parse(env.ROOMOS_PARITY_ADDRESSES);
   } catch (error) {
     throw new Error(
-      `ROOMOS_PARITY_ADDRESSES must be a JSON string array: ${error.message}`,
+      `ROOMOS_PARITY_ADDRESSES must be a JSON string array: ${getErrorMessage(error)}`,
     );
   }
 
@@ -690,18 +972,18 @@ function parseAddressDevices(env) {
   });
 }
 
-function parseJsonDevices(env) {
+function parseJsonDevices(env: EnvMap) {
   if (!env.ROOMOS_PARITY_DEVICES) {
     return [];
   }
 
-  let devices;
+  let devices: unknown;
 
   try {
     devices = JSON.parse(env.ROOMOS_PARITY_DEVICES);
   } catch (error) {
     throw new Error(
-      `ROOMOS_PARITY_DEVICES must be a JSON array: ${error.message}`,
+      `ROOMOS_PARITY_DEVICES must be a JSON array: ${getErrorMessage(error)}`,
     );
   }
 
@@ -716,11 +998,15 @@ function parseJsonDevices(env) {
   );
 }
 
-function parseNumberedDevices(env) {
-  const deviceGroups = new Map();
+function parseNumberedDevices(env: EnvMap) {
+  const deviceGroups = new Map<number, DeviceInput>();
   const defaults = getCommonCredentials(env);
 
   for (const [key, value] of Object.entries(env)) {
+    if (typeof value === "undefined") {
+      continue;
+    }
+
     const match = /^ROOMOS_PARITY_DEVICE_(\d+)_(ADDRESS|HOST|NAME|PASS|PASSWORD|PORT|PROTOCOL|USER|USERNAME)$/i.exec(
       key,
     );
@@ -729,7 +1015,13 @@ function parseNumberedDevices(env) {
       continue;
     }
 
-    const [, rawIndex, rawField] = match;
+    const rawIndex = match[1];
+    const rawField = match[2];
+
+    if (!rawIndex || !rawField) {
+      continue;
+    }
+
     const index = Number.parseInt(rawIndex, 10);
     const field = rawField.toLowerCase();
     const device = deviceGroups.get(index) ?? {};
@@ -758,7 +1050,7 @@ function parseNumberedDevices(env) {
     );
 }
 
-function parseDevices(env, envPath) {
+function parseDevices(env: EnvMap, envPath: string) {
   const devices = [
     ...parseAddressDevices(env),
     ...parseJsonDevices(env),
@@ -774,11 +1066,11 @@ function parseDevices(env, envPath) {
   return devices;
 }
 
-function hasConnectionProtocol(address) {
+function hasConnectionProtocol(address: string) {
   return /^[a-z][a-z0-9+.-]*:\/\//i.test(address);
 }
 
-function appendPort(address, port) {
+function appendPort(address: string, port?: number) {
   if (!port || hasConnectionProtocol(address) || /:\d+$/.test(address)) {
     return address;
   }
@@ -786,7 +1078,7 @@ function appendPort(address, port) {
   return `${address}:${port}`;
 }
 
-function getConnectionUrls(device) {
+function getConnectionUrls(device: Device) {
   if (hasConnectionProtocol(device.address)) {
     return [device.address];
   }
@@ -796,7 +1088,7 @@ function getConnectionUrls(device) {
   return [`ssh://${address}`, `wss://${address}`];
 }
 
-function sanitizeConnectionUrl(connectionUrl) {
+function sanitizeConnectionUrl(connectionUrl: string) {
   try {
     const url = new URL(connectionUrl);
 
@@ -811,23 +1103,29 @@ function sanitizeConnectionUrl(connectionUrl) {
   }
 }
 
-function getDeviceAddressLabel(device) {
+function getDeviceAddressLabel(device: Device) {
   return sanitizeConnectionUrl(device.address);
 }
 
-function connectDeviceUrl(device, connectionUrl, timeoutMs) {
+function connectDeviceUrl(
+  device: Device,
+  connectionUrl: string,
+  timeoutMs: number,
+): Promise<XapiLike> {
   return new Promise((resolvePromise, rejectPromise) => {
     let settled = false;
-    let timer;
-    let xapi;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let xapi: XapiLike | undefined;
 
-    const settle = (callback, value) => {
+    const settle = (callback: (value: any) => void, value: any) => {
       if (settled) {
         return;
       }
 
       settled = true;
-      clearTimeout(timer);
+      if (timer) {
+        clearTimeout(timer);
+      }
 
       if (xapi) {
         xapi.removeListener("ready", onReady);
@@ -837,11 +1135,11 @@ function connectDeviceUrl(device, connectionUrl, timeoutMs) {
       callback(value);
     };
 
-    const onReady = (readyXapi) => {
+    const onReady = (readyXapi?: XapiLike) => {
       settle(resolvePromise, readyXapi ?? xapi);
     };
 
-    const onError = (error) => {
+    const onError = (error: unknown) => {
       try {
         xapi?.close();
       } catch {
@@ -883,8 +1181,11 @@ function connectDeviceUrl(device, connectionUrl, timeoutMs) {
   });
 }
 
-async function connectDevice(device, timeoutMs) {
-  const errors = [];
+async function connectDevice(
+  device: Device,
+  timeoutMs: number,
+): Promise<ConnectionResult> {
+  const errors: Array<{ connectionUrl: string; error: unknown }> = [];
 
   for (const connectionUrl of getConnectionUrls(device)) {
     try {
@@ -899,8 +1200,9 @@ async function connectDevice(device, timeoutMs) {
 
   const attempted = errors
     .map(({ connectionUrl, error }) => {
-      const code = error?.code ? `${error.code} ` : "";
-      const message = error?.message ?? String(error);
+      const errorCode = getErrorCode(error);
+      const code = errorCode ? `${errorCode} ` : "";
+      const message = getErrorMessage(error);
       return `${sanitizeConnectionUrl(connectionUrl)} (${code}${message})`;
     })
     .join("; ");
@@ -910,7 +1212,7 @@ async function connectDevice(device, timeoutMs) {
   );
 }
 
-function closeDevice(xapi) {
+function closeDevice(xapi: XapiLike | undefined) {
   if (!xapi || typeof xapi.close !== "function") {
     return;
   }
@@ -918,33 +1220,34 @@ function closeDevice(xapi) {
   try {
     xapi.close();
   } catch (error) {
-    console.warn(`Failed to close xapi connection: ${error.message}`);
+    console.warn(`Failed to close xapi connection: ${getErrorMessage(error)}`);
   }
 }
 
-function getResultValue(report, name) {
-  return report.results.find((result) => result.name === name && result.ok)?.value;
+function getResultValue(report: ProbeReport, name: string) {
+  const result = report.results.find((candidate) => candidate.name === name);
+  return result?.ok ? result.value : undefined;
 }
 
-function getLiveProductPlatform(liveReport) {
+function getLiveProductPlatform(liveReport: ProbeReport) {
   const productFromLowercase = getResultValue(
     liveReport,
-    "xapi.status.get(SystemUnit/ProductPlatform)",
+    "xapi.status.get(SystemUnit ProductPlatform)",
   );
 
   if (typeof productFromLowercase === "string") {
     return productFromLowercase;
   }
 
-  const productFromProxy = getResultValue(
+  const productFromNewStyle = getResultValue(
     liveReport,
     "xapi.Status.SystemUnit.ProductPlatform.get",
   );
 
-  return typeof productFromProxy === "string" ? productFromProxy : undefined;
+  return typeof productFromNewStyle === "string" ? productFromNewStyle : undefined;
 }
 
-async function readLiveStatusString(xapi, path) {
+async function readLiveStatusString(xapi: XapiLike, path: string) {
   try {
     const value = await xapi.status.get(path);
     return typeof value === "string" ? value : undefined;
@@ -953,7 +1256,7 @@ async function readLiveStatusString(xapi, path) {
   }
 }
 
-function getRoomOsMajorVersion(...values) {
+function getRoomOsMajorVersion(...values: unknown[]) {
   for (const value of values) {
     if (typeof value !== "string") {
       continue;
@@ -972,21 +1275,78 @@ function getRoomOsMajorVersion(...values) {
   return "unknown";
 }
 
-async function getLiveSoftwareInfo(xapi) {
+async function getLiveSoftwareInfo(xapi: XapiLike): Promise<SoftwareInfo> {
   const [displayName, version] = await Promise.all([
-    readLiveStatusString(xapi, "SystemUnit/Software/DisplayName"),
-    readLiveStatusString(xapi, "SystemUnit/Software/Version"),
+    readLiveStatusString(xapi, "SystemUnit Software DisplayName"),
+    readLiveStatusString(xapi, "SystemUnit Software Version"),
   ]);
 
-  return {
-    displayName,
+  const softwareInfo: SoftwareInfo = {
     majorVersion: getRoomOsMajorVersion(displayName, version),
-    version,
   };
+
+  if (typeof displayName !== "undefined") {
+    softwareInfo.displayName = displayName;
+  }
+
+  if (typeof version !== "undefined") {
+    softwareInfo.version = version;
+  }
+
+  return softwareInfo;
 }
 
-async function runDeviceComparison(device, probes, connectTimeoutMs) {
-  let liveXapi;
+function getSchemaMetadata(): SchemaMetadata {
+  if (!schemaMetadata) {
+    schemaMetadata = JSON.parse(readFileSync(schemaMetaPath, "utf8"));
+  }
+
+  return schemaMetadata as SchemaMetadata;
+}
+
+function getRoomOsMajorNumber(roomOsMajor: unknown) {
+  const majorMatch = typeof roomOsMajor === "string"
+    ? roomOsMajor.match(/\bRoomOS\s+(\d+)\b/i)
+    : undefined;
+
+  return majorMatch ? Number(majorMatch[1]) : undefined;
+}
+
+function getSchemaVersion(schemaName: unknown) {
+  return typeof schemaName === "string"
+    ? schemaName.match(/^(\d+(?:\.\d+)*)/)?.[1]
+    : undefined;
+}
+
+function getTestedSchemaLabel(roomOsMajor: unknown) {
+  const majorVersion = getRoomOsMajorNumber(roomOsMajor);
+
+  if (typeof majorVersion !== "number") {
+    return "unknown";
+  }
+
+  const schema = getSchemaMetadata().schemas?.find(
+    (schemaEntry) => schemaEntry.majorVersion === majorVersion,
+  );
+  const schemaVersion = getSchemaVersion(schema?.name);
+
+  return schemaVersion ? `RoomOS ${schemaVersion}` : "unknown";
+}
+
+async function createBuiltMockXapi(): Promise<MockXapiInstance> {
+  const builtPackage = await import(builtPackageEntryPoint) as {
+    MockXapi: new () => MockXapiInstance;
+  };
+
+  return new builtPackage.MockXapi();
+}
+
+async function runDeviceComparison(
+  device: Device,
+  probes: ProbeDefinition[],
+  connectTimeoutMs: number,
+): Promise<DeviceComparisonReport> {
+  let liveXapi: XapiLike | undefined;
 
   try {
     console.log(
@@ -996,25 +1356,30 @@ async function runDeviceComparison(device, probes, connectTimeoutMs) {
     liveXapi = connection.xapi;
     const liveReport = await collectReport(liveXapi, probes);
     const software = await getLiveSoftwareInfo(liveXapi);
-    const mockXapi = createXapi();
+    const mockXapi = await createBuiltMockXapi();
     const productPlatform = getLiveProductPlatform(liveReport);
 
     if (productPlatform) {
-      mockXapi.setStatus("SystemUnit/ProductPlatform", productPlatform);
+      mockXapi.setStatus("SystemUnit ProductPlatform", productPlatform);
     }
 
     const mockReport = await collectReport(mockXapi, probes);
     const comparisons = compareReports(liveReport, mockReport, probes);
 
-    return {
+    const report: DeviceComparisonReport = {
       comparisons,
       connectionUrl: connection.url,
       device,
       liveReport,
       mockReport,
-      productPlatform,
       software,
     };
+
+    if (typeof productPlatform !== "undefined") {
+      report.productPlatform = productPlatform;
+    }
+
+    return report;
   } catch (error) {
     return {
       device,
@@ -1025,11 +1390,11 @@ async function runDeviceComparison(device, probes, connectTimeoutMs) {
   }
 }
 
-function getReportLabel(report) {
+function getReportLabel(report: DeviceComparisonReport) {
   return report.productPlatform ?? getDeviceAddressLabel(report.device);
 }
 
-function formatDeviceSummary(report) {
+function formatDeviceSummary(report: DeviceComparisonReport) {
   if (report.error) {
     return [
       "",
@@ -1038,16 +1403,17 @@ function formatDeviceSummary(report) {
     ].join("\n");
   }
 
-  const passed = report.comparisons.filter((comparison) => comparison.pass).length;
-  const failed = report.comparisons.length - passed;
+  const comparisons = report.comparisons ?? [];
+  const passed = comparisons.filter((comparison) => comparison.pass).length;
+  const failed = comparisons.length - passed;
   const rows = [
     "",
     getReportLabel(report),
-    `  Connected via ${sanitizeConnectionUrl(report.connectionUrl)}`,
-    `  Passed ${passed}/${report.comparisons.length} probes`,
+    `  Connected via ${sanitizeConnectionUrl(report.connectionUrl ?? "unknown")}`,
+    `  Passed ${passed}/${comparisons.length} probes`,
   ];
 
-  for (const comparison of report.comparisons) {
+  for (const comparison of comparisons) {
     const marker = comparison.pass ? "PASS" : "FAIL";
     rows.push(`  ${marker} ${comparison.name}: ${comparison.details}`);
   }
@@ -1059,7 +1425,7 @@ function formatDeviceSummary(report) {
   return rows.join("\n");
 }
 
-function printFinalSummary(reports) {
+function printFinalSummary(reports: DeviceComparisonReport[]) {
   const deviceErrors = reports.filter((report) => report.error).length;
   const comparisons = reports.flatMap((report) => report.comparisons ?? []);
   const failed = comparisons.filter((comparison) => !comparison.pass).length;
@@ -1084,15 +1450,15 @@ function printFinalSummary(reports) {
   };
 }
 
-function escapeMarkdownCell(value) {
+function escapeMarkdownCell(value: unknown) {
   return String(value ?? "unknown")
     .replaceAll("\\", "\\\\")
     .replaceAll("|", "\\|")
     .replaceAll("\n", " ");
 }
 
-function getValidationRows(reports) {
-  const rows = [];
+function getValidationRows(reports: DeviceComparisonReport[]) {
+  const rows: ValidationRow[] = [];
   const seen = new Set();
 
   for (const report of reports) {
@@ -1100,21 +1466,19 @@ function getValidationRows(reports) {
       continue;
     }
 
-    const passed = report.comparisons.filter((comparison) => comparison.pass).length;
-    const total = report.comparisons.length;
+    const comparisons = report.comparisons ?? [];
+    const passed = comparisons.filter((comparison) => comparison.pass).length;
+    const total = comparisons.length;
     const row = {
       hardware: getReportLabel(report),
       result: `${passed}/${total} passed`,
       roomOsMajor: report.software?.majorVersion ?? "unknown",
-      software:
-        report.software?.displayName ??
-        report.software?.version ??
-        "unknown",
+      schema: getTestedSchemaLabel(report.software?.majorVersion),
     };
     const rowKey = [
       row.hardware,
       row.roomOsMajor,
-      row.software,
+      row.schema,
       row.result,
     ].join("\u0000");
 
@@ -1127,16 +1491,19 @@ function getValidationRows(reports) {
   return rows.sort((left, right) =>
     left.hardware.localeCompare(right.hardware) ||
     left.roomOsMajor.localeCompare(right.roomOsMajor) ||
-    left.software.localeCompare(right.software),
+    left.schema.localeCompare(right.schema),
   );
 }
 
-function createReadmeValidationBlock(reports, generatedAt = new Date()) {
+function createReadmeValidationBlock(
+  reports: DeviceComparisonReport[],
+  generatedAt = new Date(),
+) {
   const generatedDate = generatedAt.toISOString().slice(0, 10);
   const rows = getValidationRows(reports);
   const lines = [
     readmeResultsStartMarker,
-    "| Hardware | RoomOS major | Software | Result | Last validated |",
+    "| Hardware | RoomOS major | Tested schema | Result | Last validated |",
     "| --- | --- | --- | --- | --- |",
   ];
 
@@ -1145,7 +1512,7 @@ function createReadmeValidationBlock(reports, generatedAt = new Date()) {
   } else {
     for (const row of rows) {
       lines.push(
-        `| ${escapeMarkdownCell(row.hardware)} | ${escapeMarkdownCell(row.roomOsMajor)} | ${escapeMarkdownCell(row.software)} | ${escapeMarkdownCell(row.result)} | ${generatedDate} |`,
+        `| ${escapeMarkdownCell(row.hardware)} | ${escapeMarkdownCell(row.roomOsMajor)} | ${escapeMarkdownCell(row.schema)} | ${escapeMarkdownCell(row.result)} | ${generatedDate} |`,
       );
     }
   }
@@ -1154,7 +1521,7 @@ function createReadmeValidationBlock(reports, generatedAt = new Date()) {
   return lines.join("\n");
 }
 
-function updateReadmeValidationResults(reports) {
+function updateReadmeValidationResults(reports: DeviceComparisonReport[]) {
   const readme = readFileSync(readmePath, "utf8");
   const startIndex = readme.indexOf(readmeResultsStartMarker);
   const endIndex = readme.indexOf(readmeResultsEndMarker);
