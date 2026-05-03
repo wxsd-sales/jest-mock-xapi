@@ -11,35 +11,83 @@ The package exposes a mocked default `xapi` export that mirrors the RoomOS macro
 
 ### New style API support
 
-- `xapi.Command.Audio.Volume.Set({ Level: 10 })`
-- `xapi.Status.Audio.Volume.get()`
-- `xapi.Config.Audio.DefaultVolume.set(10)`
-- `xapi.Event.UserInterface.Extensions.Panel.Clicked.on((event) => console.log("Panel:", event.PanelId))`
-- See [Use new style RoomOS API](#use-new-style-roomos-api) and [Set values and trigger xAPI updates](#set-values-and-trigger-xapi-updates).
+```js
+// Call commands with schema-backed new style paths.
+await xapi.Command.Audio.Volume.Set({ Level: 10 });
+
+// Read status values from new style status paths.
+await xapi.Status.Audio.Volume.get();
+
+// Set config values and notify matching config listeners.
+await xapi.Config.Audio.DefaultVolume.set(10);
+
+// Subscribe to event payloads with the same path shape used by RoomOS.
+xapi.Event.UserInterface.Extensions.Panel.Clicked.on((event) => {
+  console.log("Panel:", event.PanelId);
+});
+```
+
+See [Use new style RoomOS API](#use-new-style-roomos-api) and [Set values and trigger xAPI updates](#set-values-and-trigger-xapi-updates).
 
 ### Old style API support
 
-- `xapi.command("Audio Volume Set", { Level: 10 })`
-- `xapi.status.get("Audio Volume")`
-- `xapi.config.set("Audio DefaultVolume", 10)`
-- `xapi.event.on("UserInterface Extensions Panel Clicked", (event) => console.log("Panel:", event.PanelId))`
-- See [Use old style RoomOS API](#use-old-style-roomos-api).
+```js
+// Call commands with the public RoomOS spaced path style.
+await xapi.command("Audio Volume Set", { Level: 10 });
+
+// Read status values with a spaced old style path.
+await xapi.status.get("Audio Volume");
+
+// Set config values with the old style API.
+await xapi.config.set("Audio DefaultVolume", 10);
+
+// Subscribe to event payloads with an old style path.
+xapi.event.on("UserInterface Extensions Panel Clicked", (event) => {
+  console.log("Panel:", event.PanelId);
+});
+```
+
+See [Use old style RoomOS API](#use-old-style-roomos-api).
 
 ### Product-enforced xAPI usage
 
-- `xapi.Status.SystemUnit.ProductPlatform.get()` returns `Desk Pro` by default and enforces Desk Pro xAPI availability.
-- `xapi.Status.SystemUnit.ProductPlatform.set("Codec EQ")` switches the mock to Codec EQ product-specific xAPIs and argument validation.
-- `xapi.doc("Command Audio Setup Clear")` returns a schema doc result when the selected product supports that path.
-- `xapi.Status.SystemUnit.ProductPlatform.set("Desk Pro")` switches back to Desk Pro, where `xapi.doc("Command Audio Setup Clear")` will not return a doc result because that command is not available on that product.
-- See [Select a RoomOS product](#select-a-roomos-product) and [Read schema docs](#read-schema-docs).
+```js
+// Desk Pro is the default product platform.
+await xapi.Status.SystemUnit.ProductPlatform.get();
+
+// Switch the mock to another product platform and its supported xAPIs.
+xapi.Status.SystemUnit.ProductPlatform.set("Codec EQ");
+
+// Schema docs are product-aware.
+await xapi.doc("Command Audio Setup Clear");
+
+// Switching back to Desk Pro removes unsupported product-specific docs/paths.
+xapi.Status.SystemUnit.ProductPlatform.set("Desk Pro");
+```
+
+See [Select a RoomOS product](#select-a-roomos-product) and [Read schema docs](#read-schema-docs).
 
 ### Test helper functions
 
-- `xapi.Status.Audio.Volume.set(30)` sets a status value and notifies matching status listeners.
-- `xapi.Config.Audio.DefaultVolume.set(70)` sets a config value and notifies matching config listeners.
-- `xapi.Event.UserInterface.Extensions.Panel.Clicked.emit({ PanelId: "speed-dial-panel" })` emits an event payload to matching event listeners.
-- `xapi.Command.Dial` is a Jest mock function, so tests can assert calls with `expect(xapi.Command.Dial).toHaveBeenCalledWith({ Number: "number@example.com" })`.
-- See [Set leaf status and config values](#set-leaf-status-and-config-values), [Emit xEvent payloads](#emit-xevent-payloads), [Assert xCommand calls](#assert-xcommand-calls), and [Mock utilities](#mock-utilities).
+```js
+// Set a status value and notify matching status listeners.
+xapi.Status.Audio.Volume.set(30);
+
+// Set a config value and notify matching config listeners.
+await xapi.Config.Audio.DefaultVolume.set(70);
+
+// Emit an event payload to matching event listeners.
+xapi.Event.UserInterface.Extensions.Panel.Clicked.emit({
+  PanelId: "speed-dial-panel",
+});
+
+// Assert command calls with normal Jest matchers.
+expect(xapi.Command.Dial).toHaveBeenCalledWith({
+  Number: "number@example.com",
+});
+```
+
+See [Set leaf status and config values](#set-leaf-status-and-config-values), [Emit xEvent payloads](#emit-xevent-payloads), [Assert xCommand calls](#assert-xcommand-calls), and [Mock utilities](#mock-utilities).
 
 
 ## Setup
@@ -161,77 +209,192 @@ The supported macro-facing surface includes:
 
 #### New style
 
-- `xapi.Command.<path chain>(params?, body?)` calls a schema-backed command and records the call as a Jest mock function.
-- `xapi.Status.<path chain>.get()` reads a status leaf, branch, or root value.
-- `xapi.Status.<path chain>.on(listener)` subscribes to matching status updates and returns an unsubscribe function.
-- `xapi.Status.<path chain>.once(listener)` subscribes to the next matching status update, then automatically unsubscribes.
-- `xapi.Status.<path chain>.remove()` removes a stored status branch and notifies matching listeners.
-- `xapi.Config.<path chain>.get()` reads a config leaf, branch, or root value.
-- `xapi.Config.<path chain>.set(value)` validates and writes a config value, then notifies matching config listeners.
-- `xapi.Config.<path chain>.on(listener)` subscribes to matching config updates and returns an unsubscribe function.
-- `xapi.Config.<path chain>.once(listener)` subscribes to the next matching config update, then automatically unsubscribes.
-- `xapi.Event.<path chain>.on(listener)` subscribes to matching event payloads and returns an unsubscribe function.
-- `xapi.Event.<path chain>.once(listener)` subscribes to the next matching event payload, then automatically unsubscribes.
-- Indexed paths use bracket notation, for example `xapi.Status.Call[1].Status.get()`.
-- New style command paths and operation functions are Jest mock functions. This includes `xapi.Command.<path chain>`, plus `.get`, `.set`, `.on`, `.once`, `.remove`, and `.emit` operation functions where available.
+```js
+// Commands are schema-backed Jest mock functions.
+await xapi.Command.Audio.Volume.Set({ Level: 10 });
+
+// Status paths can be read, subscribed to, and removed in tests.
+await xapi.Status.Audio.Volume.get();
+xapi.Status.Audio.Volume.on(listener);
+xapi.Status.Audio.Volume.once(listener);
+xapi.Status.Call[1].remove();
+
+// Config paths can be read, set, and subscribed to.
+await xapi.Config.Audio.DefaultVolume.get();
+await xapi.Config.Audio.DefaultVolume.set(70);
+xapi.Config.Audio.DefaultVolume.on(listener);
+xapi.Config.Audio.DefaultVolume.once(listener);
+
+// Event paths can be subscribed to.
+xapi.Event.UserInterface.Extensions.Panel.Clicked.on(listener);
+xapi.Event.UserInterface.Extensions.Panel.Clicked.once(listener);
+
+// Indexed paths use bracket notation.
+await xapi.Status.Call[1].Status.get();
+
+// New style command paths and operation functions expose Jest helpers.
+xapi.Command.Dial.mockResolvedValueOnce(result);
+xapi.Status.Audio.Volume.get.mockResolvedValueOnce(55);
+```
+
+The same operation shape is available for any schema-backed path supported by the selected product.
 
 #### Old style
 
-- `xapi.command(path, params?, body?)` calls a schema-backed command using a spaced path such as `"Audio Volume Set"`.
-- `xapi.status.get(path?)` reads a status leaf, branch, or root value.
-- `xapi.status.on(path, listener)` and `xapi.status.once(path, listener)` subscribe to status updates for a path.
-- `xapi.status.on(listener)` and `xapi.status.once(listener)` subscribe to root status updates.
-- `xapi.config.get(path?)` reads a config leaf, branch, or root value.
-- `xapi.config.set(path, value)` validates and writes a config value.
-- `xapi.config.on(path, listener)` and `xapi.config.once(path, listener)` subscribe to config updates for a path.
-- `xapi.config.on(listener)` and `xapi.config.once(listener)` subscribe to root config updates.
-- `xapi.event.on(path, listener)` and `xapi.event.once(path, listener)` subscribe to event payloads for a path.
-- `xapi.event.on(listener)` and `xapi.event.once(listener)` subscribe to root event payloads.
-- Path arguments can be spaced strings such as `"UserInterface Extensions Panel Clicked"` or arrays such as `["Call", 1, "Status"]`.
-- Old style functions are Jest mock functions. This includes `xapi.command`, `xapi.status.get`, `xapi.status.on`, `xapi.status.once`, `xapi.config.get`, `xapi.config.set`, `xapi.config.on`, `xapi.config.once`, `xapi.event.on`, `xapi.event.once`, and `xapi.doc`.
+```js
+// Commands use spaced public RoomOS paths.
+await xapi.command("Audio Volume Set", { Level: 10 });
+
+// Status paths can be read and subscribed to.
+await xapi.status.get("Audio Volume");
+xapi.status.on("Audio Volume", listener);
+xapi.status.once("Audio Volume", listener);
+
+// Passing only a listener subscribes at the root.
+xapi.status.on(listener);
+xapi.status.once(listener);
+
+// Config paths can be read, set, and subscribed to.
+await xapi.config.get("Audio DefaultVolume");
+await xapi.config.set("Audio DefaultVolume", 70);
+xapi.config.on("Audio DefaultVolume", listener);
+xapi.config.once("Audio DefaultVolume", listener);
+
+// Event paths can be subscribed to.
+xapi.event.on("UserInterface Extensions Panel Clicked", listener);
+xapi.event.once("UserInterface Extensions Panel Clicked", listener);
+
+// Path arguments can also use arrays for indexed paths.
+await xapi.status.get(["Call", 1, "Status"]);
+
+// Old style functions expose Jest helpers too.
+xapi.status.get.mockResolvedValueOnce(55);
+xapi.command.mockResolvedValueOnce("Dial", result);
+```
 
 #### Additional runtime surface
 
-- `xapi.doc(path)` returns schema-derived documentation for status, config, command, and event paths.
-- `xapi.version` defaults to `"6.0.0"`.
+```js
+// Read schema-derived docs for status, config, command, and event paths.
+await xapi.doc("Status Audio Volume");
+
+// The mocked xapi version defaults to 6.0.0.
+xapi.version;
+```
 
 #### Test-only mock controls
 
 The mock has two kinds of test controls:
 
-- State and event helpers set mock xAPI values or emit xAPI updates.
-- Jest mock function controls override or inspect calls made to mocked xAPI functions.
+```js
+// State and event helpers set mock xAPI values or emit xAPI updates.
+xapi.Status.Audio.Volume.set(30);
+
+// Jest mock function controls override or inspect mocked xAPI calls.
+xapi.Command.Dial.mockResolvedValueOnce(result);
+```
 
 ##### State and event helpers
 
 Use these when a test needs to prepare mock device state or simulate an xAPI update that should notify macro listeners.
 
-- `xapi.Status.<path chain>.set(value)`, with helper equivalent `xapi.setStatus(path, value)`, sets a status value and notifies matching status listeners.
-- `xapi.Config.<path chain>.set(value)`, with old style `xapi.config.set(path, value)` or helper `xapi.setConfig(path, value)`, sets a config value and notifies matching config listeners.
-- `xapi.Event.<path chain>.emit(payload)`, with helper equivalent `xapi.emitEvent(path, payload)`, emits an event payload to matching event listeners.
-- `xapi.Status.<path chain>.remove()`, with helper equivalent `xapi.removeStatus(path)`, removes a status branch and emits the RoomOS-style ghost payload used by indexed branches such as calls.
-- `xapi.reset()` resets values, listeners, command overrides, and Jest mock call counts.
+```js
+// Set a status value and notify matching status listeners.
+xapi.Status.Audio.Volume.set(30);
+// xapi.setStatus("Audio Volume", 30);
+
+// Set a config value and notify matching config listeners.
+await xapi.Config.Audio.DefaultVolume.set(70);
+// await xapi.config.set("Audio DefaultVolume", 70);
+// await xapi.setConfig("Audio DefaultVolume", 70);
+
+// Emit an event payload to matching event listeners.
+xapi.Event.UserInterface.Extensions.Panel.Clicked.emit({
+  PanelId: "speed-dial-panel",
+});
+// xapi.emitEvent("UserInterface Extensions Panel Clicked", {
+//   PanelId: "speed-dial-panel",
+// });
+
+// Remove a status branch and emit the RoomOS-style ghost payload for indexed branches.
+xapi.Status.Call[7].remove();
+// xapi.removeStatus("Call 7");
+
+// Reset values, listeners, command overrides, and Jest mock call counts.
+xapi.reset();
+```
 
 ##### Jest mock function controls
 
 Use these when a test needs normal Jest mock behavior, such as asserting calls, inspecting call history, or setting a one-off command response.
 
-- New style command paths use Jest helpers directly, for example `xapi.Command.Dial.mockResolvedValueOnce(result)`.
-- New style operation functions also expose Jest helpers, for example `xapi.Status.Audio.Volume.get.mockResolvedValueOnce(55)` or `xapi.Event.UserInterface.Extensions.Panel.Clicked.on.mockImplementationOnce(handler)`.
-- New style and old style calls share the same cached path-level mocks. For example, `xapi.command("Dial", params)` is also recorded on `xapi.Command.Dial`, and `xapi.status.get("Audio Volume")` is also recorded on `xapi.Status.Audio.Volume.get`.
-- Old style functions expose Jest helpers on the function being called, such as `xapi.status.get.mockResolvedValueOnce(55)` and `xapi.event.on.mockImplementationOnce(handler)`.
-- Old style `xapi.command` uses the same helper names with the old style path first, for example `xapi.command.mockImplementationOnce("Dial", handler)`, `xapi.command.mockResolvedValueOnce("Dial", value)`, `xapi.command.mockRejectedValueOnce("Dial", error)`, and `xapi.command.mockReturnValueOnce("Dial", value)`.
-- Lower-level command helpers `xapi.setCommandResult(path, result)` and `xapi.setCommandHandler(path, handler)` remain available when a test needs one command override to apply to both new style and old style command calls.
+```js
+// New style command paths use Jest helpers directly.
+xapi.Command.Dial.mockResolvedValueOnce(result);
+
+// New style operation functions expose Jest helpers too.
+xapi.Status.Audio.Volume.get.mockResolvedValueOnce(55);
+xapi.Event.UserInterface.Extensions.Panel.Clicked.on.mockImplementationOnce(handler);
+
+// Mixed old/new style calls share cached path-level mocks.
+await xapi.command("Dial", params);
+expect(xapi.Command.Dial).toHaveBeenCalledWith(params);
+
+await xapi.status.get("Audio Volume");
+expect(xapi.Status.Audio.Volume.get).toHaveBeenCalled();
+
+// Old style functions expose Jest helpers on the function being called.
+xapi.status.get.mockResolvedValueOnce(55);
+xapi.event.on.mockImplementationOnce(handler);
+
+// Old style commands use the same helper names with the path first.
+xapi.command.mockImplementationOnce("Dial", handler);
+xapi.command.mockResolvedValueOnce("Dial", value);
+xapi.command.mockRejectedValueOnce("Dial", error);
+xapi.command.mockReturnValueOnce("Dial", value);
+
+// Lower-level helpers can override both styles at once.
+xapi.setCommandResult("Dial", result);
+xapi.setCommandHandler("Dial", handler);
+```
 
 #### Jest mock APIs
 
 The mock exposes Jest's mock-function API on both new style and old style xAPI functions. Use these APIs when you want to control a mocked function result or assert how a macro called xAPI:
 
-- Call assertions: `expect(fn).toHaveBeenCalled()`, `expect(fn).toHaveBeenCalledWith(...)`, `expect(fn).toHaveBeenNthCalledWith(...)`, and other Jest mock matchers.
-- Call inspection: `fn.mock`, `fn.mock.calls`, `fn.mock.results`, `fn.getMockName()`, and `fn.getMockImplementation()`.
-- Reset and naming helpers: `fn.mockClear()`, `fn.mockReset()`, `fn.mockRestore()`, `fn.mockName(name)`, and `fn.mockReturnThis()`.
-- Implementation helpers: `fn.mockImplementation(handler)`, `fn.mockImplementationOnce(handler)`, and `fn.withImplementation(handler, callback)`.
-- Result helpers: `fn.mockReturnValue(value)`, `fn.mockReturnValueOnce(value)`, `fn.mockResolvedValue(value)`, `fn.mockResolvedValueOnce(value)`, `fn.mockRejectedValue(value)`, and `fn.mockRejectedValueOnce(value)`.
+```js
+// Call assertions use normal Jest mock matchers.
+expect(fn).toHaveBeenCalled();
+expect(fn).toHaveBeenCalledWith(...args);
+expect(fn).toHaveBeenNthCalledWith(1, ...args);
+
+// Call inspection uses the standard Jest mock fields and helpers.
+fn.mock;
+fn.mock.calls;
+fn.mock.results;
+fn.getMockName();
+fn.getMockImplementation();
+
+// Reset and naming helpers are available on mocked xAPI functions.
+fn.mockClear();
+fn.mockReset();
+fn.mockRestore();
+fn.mockName("descriptive mock name");
+fn.mockReturnThis();
+
+// Implementation helpers support temporary command/status/config/event behavior.
+fn.mockImplementation(handler);
+fn.mockImplementationOnce(handler);
+fn.withImplementation(handler, callback);
+
+// Result helpers support sync, resolved, and rejected mock values.
+fn.mockReturnValue(value);
+fn.mockReturnValueOnce(value);
+fn.mockResolvedValue(value);
+fn.mockResolvedValueOnce(value);
+fn.mockRejectedValue(value);
+fn.mockRejectedValueOnce(value);
+```
 
 For new style command paths, call the Jest helper directly on the command path:
 
@@ -533,24 +696,66 @@ Available helpers:
 
 State and event helpers:
 
-- `xapi.Status.<path chain>.set(value)`, with helper equivalent `xapi.setStatus(path, value)`, updates status state and notifies listeners.
-- `xapi.Config.<path chain>.set(value)`, with old style `xapi.config.set(path, value)` or helper `xapi.setConfig(path, value)`, updates config state and notifies listeners.
-- `xapi.Event.<path chain>.emit(payload)`, with helper equivalent `xapi.emitEvent(path, payload)`, emits event payloads to matching listeners.
-- `xapi.Status.<path chain>.remove()`, with helper equivalent `xapi.removeStatus(path)`, removes a status branch and emits the RoomOS-style ghost payload for indexed branches.
+```js
+// Update status state and notify matching listeners.
+xapi.Status.Audio.Volume.set(20);
+// xapi.setStatus("Audio Volume", 20);
+
+// Update config state and notify matching listeners.
+await xapi.Config.Audio.DefaultVolume.set(100);
+// await xapi.config.set("Audio DefaultVolume", 100);
+// await xapi.setConfig("Audio DefaultVolume", 100);
+
+// Emit event payloads to matching listeners.
+xapi.Event.UserInterface.Extensions.Panel.Clicked.emit({
+  PanelId: "speed-dial-panel",
+});
+// xapi.emitEvent("UserInterface Extensions Panel Clicked", {
+//   PanelId: "speed-dial-panel",
+// });
+
+// Remove a status branch and emit the RoomOS-style ghost payload.
+xapi.Status.Call[7].remove();
+// xapi.removeStatus("Call 7");
+```
 
 Jest mock function helpers:
 
-- `xapi.Command.<path chain>.mockImplementationOnce(handler)`, `mockResolvedValueOnce(value)`, `mockRejectedValueOnce(value)`, and `mockReturnValueOnce(value)` set command behavior directly on new style command paths.
-- Mixed-style macro code shares path-level mocks, so old style calls such as `xapi.command(path, params)`, `xapi.status.get(path)`, `xapi.config.set(path, value)`, and `xapi.event.on(path, listener)` are also recorded on the matching new style path mocks.
-- The old style equivalent uses `xapi.command` with the command path first, such as `xapi.command.mockImplementationOnce(path, handler)`, `xapi.command.mockResolvedValueOnce(path, value)`, `xapi.command.mockRejectedValueOnce(path, error)`, and `xapi.command.mockReturnValueOnce(path, value)`.
+```js
+// Set command behavior directly on new style command paths.
+xapi.Command.Dial.mockImplementationOnce(handler);
+xapi.Command.Dial.mockResolvedValueOnce(value);
+xapi.Command.Dial.mockRejectedValueOnce(error);
+xapi.Command.Dial.mockReturnValueOnce(value);
+
+// Mixed-style macro code shares path-level mocks.
+await xapi.command("Dial", params);
+expect(xapi.Command.Dial).toHaveBeenCalledWith(params);
+
+await xapi.status.get("Audio Volume");
+expect(xapi.Status.Audio.Volume.get).toHaveBeenCalled();
+
+// Old style command helpers use the command path first.
+xapi.command.mockImplementationOnce("Dial", handler);
+xapi.command.mockResolvedValueOnce("Dial", value);
+xapi.command.mockRejectedValueOnce("Dial", error);
+xapi.command.mockReturnValueOnce("Dial", value);
+```
 
 Lower-level command helpers:
 
-- `xapi.setCommandResult(path, result)` and `xapi.setCommandHandler(path, handler)` remain available when a test needs one command override to apply to both new style and old style calls.
+```js
+// Apply one command override to both new style and old style calls.
+xapi.setCommandResult("Dial", result);
+xapi.setCommandHandler("Dial", handler);
+```
 
 Reset helper:
 
-- `xapi.reset()` clears values, handlers, listeners, and Jest mock call counts.
+```js
+// Clear values, handlers, listeners, and Jest mock call counts.
+xapi.reset();
+```
 
 ### Use RoomOS runtime globals
 
@@ -1015,4 +1220,4 @@ Everything included is for demo and Proof of Concept purposes only. Use of the s
 
 ## Questions
 
-Please contact the WXSD team at [wxsd@external.cisco.com](mailto:wxsd@external.cisco.com?subject=roomos-macro-simulator) for questions. Or, if you're a Cisco internal employee, reach out to us on the Webex App via our bot (`globalexpert@webex.bot`). In the `Engagement Type` field, choose `API/SDK Proof of Concept Integration Development` to make sure you reach our team.
+Please contact the WXSD team at [wxsd@external.cisco.com](mailto:wxsd@external.cisco.com?subject=jest-mock-xapi) for questions. Or, if you're a Cisco internal employee, reach out to us on the Webex App via our bot (`globalexpert@webex.bot`). In the `Engagement Type` field, choose `API/SDK Proof of Concept Integration Development` to make sure you reach our team.
