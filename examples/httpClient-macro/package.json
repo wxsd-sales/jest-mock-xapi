@@ -1,5 +1,5 @@
 {
-  "name": "speed-dial-macro-example",
+  "name": "httpclient-macro-example",
   "private": true,
   "type": "module",
   "scripts": {

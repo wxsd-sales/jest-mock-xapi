@@ -19,6 +19,10 @@ beforeEach(() => {
   xapi.reset();
 });
 
+async function enableHttpClient() {
+  await xapi.Config.HttpClient.Mode.set("On");
+}
+
 describe("xAPI Testing", () => {
   it("defines the top-level schema-backed domains", () => {
     expect(xapi.Command).toBeDefined();
@@ -873,6 +877,381 @@ describe("Command paths", () => {
     });
   });
 
+  it("rejects HttpClient commands when HttpClient Mode is Off by default", async () => {
+    await expect(
+      xapi.Command.HttpClient.Get({ Url: "https://example.test" }),
+    ).rejects.toEqual({
+      code: 1,
+      message: "Use of HttpClient disabled",
+    });
+
+    await expect(
+      xapi.command("HttpClient Get", { Url: "https://example.test" }),
+    ).rejects.toEqual({
+      code: 1,
+      message: "Use of HttpClient disabled",
+    });
+  });
+
+  it("rejects HTTP URLs when HttpClient AllowHTTP is False", async () => {
+    await enableHttpClient();
+    await xapi.Config.HttpClient.AllowHTTP.set("False");
+
+    await expect(
+      xapi.Command.HttpClient.Get({ Url: "http://example.test" }),
+    ).rejects.toEqual({
+      code: 1,
+      message: "HTTP protocol is not allowed",
+    });
+
+    await expect(
+      xapi.Command.HttpClient.Get({ Url: "https://example.test" }),
+    ).resolves.toEqual({
+      Body: "",
+      Headers: [],
+      StatusCode: "200",
+      status: "OK",
+    });
+  });
+
+  it("rejects command-level insecure HTTPS when HttpClient AllowInsecureHTTPS is False", async () => {
+    await enableHttpClient();
+
+    await expect(
+      xapi.Command.HttpClient.Get({
+        AllowInsecureHTTPS: "True",
+        Url: "https://self-signed.badssl.com",
+      }),
+    ).rejects.toEqual({
+      code: 1,
+      message: "Insecure HTTPS not allowed",
+    });
+
+    await xapi.Config.HttpClient.AllowInsecureHTTPS.set("True");
+
+    await expect(
+      xapi.Command.HttpClient.Get({
+        AllowInsecureHTTPS: "True",
+        Url: "https://self-signed.badssl.com",
+      }),
+    ).resolves.toEqual({
+      Body: "",
+      Headers: [],
+      StatusCode: "200",
+      status: "OK",
+    });
+  });
+
+  it("returns RoomOS-shaped default HttpClient responses with ResultBody defaults", async () => {
+    const url = "https://example.test";
+    await enableHttpClient();
+
+    await expect(xapi.Command.HttpClient.Get({ Url: url })).resolves.toEqual({
+      Body: "",
+      Headers: [],
+      StatusCode: "200",
+      status: "OK",
+    });
+
+    const postResult = await xapi.Command.HttpClient.Post({ Url: url });
+
+    expect(postResult).toEqual({
+      Headers: [],
+      StatusCode: "200",
+      status: "OK",
+    });
+    expect(postResult).not.toHaveProperty("Body");
+  });
+
+  it("uses setHttpClientResponse and only returns Body when ResultBody requests it", async () => {
+    const url = "https://example.test";
+    await enableHttpClient();
+
+    xapi.setHttpClientResponse("Get", {
+      body: "hidden unless requested",
+      headers: { "content-type": "text/plain" },
+      statusCode: 201,
+    });
+
+    const bodylessResult = await xapi.Command.HttpClient.Get({
+      ResultBody: "None",
+      Url: url,
+    });
+
+    expect(bodylessResult).toEqual({
+      Headers: [{ Key: "content-type", Value: "text/plain", id: "1" }],
+      StatusCode: "201",
+      status: "OK",
+    });
+    expect(bodylessResult).not.toHaveProperty("Body");
+
+    await expect(xapi.Command.HttpClient.Get({ Url: url })).resolves.toEqual({
+      Body: "hidden unless requested",
+      Headers: [{ Key: "content-type", Value: "text/plain", id: "1" }],
+      StatusCode: "201",
+      status: "OK",
+    });
+  });
+
+  it("returns helper bodies for non-GET HttpClient commands when ResultBody is explicit", async () => {
+    const url = "https://example.test";
+    await enableHttpClient();
+
+    xapi.setHttpClientResponse("Post", {
+      body: "created",
+      statusCode: 202,
+    });
+    xapi.setHttpClientResponse("HttpClient Put", {
+      body: "hello",
+      statusCode: "203",
+    });
+
+    await expect(
+      xapi.Command.HttpClient.Post({
+        ResultBody: "PlainText",
+        Url: url,
+      }),
+    ).resolves.toEqual({
+      Body: "created",
+      Headers: [],
+      StatusCode: "202",
+      status: "OK",
+    });
+    await expect(
+      xapi.command("HttpClient Put", {
+        ResultBody: "Base64",
+        Url: url,
+      }),
+    ).resolves.toEqual({
+      Body: "aGVsbG8=",
+      Headers: [],
+      StatusCode: "203",
+      status: "OK",
+    });
+  });
+
+  it("rejects non-2xx HttpClient responses with RoomOS error metadata", async () => {
+    await enableHttpClient();
+
+    xapi.setHttpClientResponse("HttpClient Get", {
+      body: "not returned",
+      headers: [["x-test", "yes"]],
+      statusCode: 404,
+    });
+
+    await expect(
+      xapi.command("HttpClient Get", {
+        ResultBody: "None",
+        Url: "https://example.test",
+      }),
+    ).rejects.toEqual({
+      code: 1,
+      data: {
+        Headers: [{ Key: "x-test", Value: "yes", id: "1" }],
+        StatusCode: "404",
+      },
+      message: "Command returned an error.",
+    });
+  });
+
+  it("rejects HttpClient commands beyond three simultaneous active connections", async () => {
+    const url = "https://example.test";
+    await enableHttpClient();
+
+    const activeRequests = Array.from({ length: 3 }, () =>
+      xapi.Command.HttpClient.Get({ Url: url }),
+    );
+    await Promise.resolve();
+    const overflowRequests = Array.from({ length: 3 }, () =>
+      xapi.Command.HttpClient.Get({ Url: url }),
+    );
+
+    const results = await Promise.allSettled([
+      ...activeRequests,
+      ...overflowRequests,
+    ]);
+
+    expect(results.slice(0, 3)).toEqual([
+      expect.objectContaining({ status: "fulfilled" }),
+      expect.objectContaining({ status: "fulfilled" }),
+      expect.objectContaining({ status: "fulfilled" }),
+    ]);
+    expect(results.slice(3)).toEqual([
+      {
+        reason: {
+          code: 1,
+          message: "No available http connections",
+        },
+        status: "rejected",
+      },
+      {
+        reason: {
+          code: 1,
+          message: "No available http connections",
+        },
+        status: "rejected",
+      },
+      {
+        reason: {
+          code: 1,
+          message: "No available http connections",
+        },
+        status: "rejected",
+      },
+    ]);
+
+    await expect(xapi.Command.HttpClient.Get({ Url: url })).resolves.toEqual({
+      Body: "",
+      Headers: [],
+      StatusCode: "200",
+      status: "OK",
+    });
+  });
+
+  it("supports per-response HttpClient delays before releasing connection slots", async () => {
+    const url = "https://example.test";
+    await enableHttpClient();
+
+    xapi.setHttpClientResponse("Get", {
+      delayMs: 25,
+    });
+
+    const activeRequests = Array.from({ length: 3 }, () =>
+      xapi.Command.HttpClient.Get({ Url: url }),
+    );
+
+    await Promise.resolve();
+    await expect(xapi.Command.HttpClient.Get({ Url: url })).rejects.toEqual({
+      code: 1,
+      message: "No available http connections",
+    });
+
+    await Promise.all(activeRequests);
+    await expect(xapi.Command.HttpClient.Get({ Url: url })).resolves.toEqual({
+      Body: "",
+      Headers: [],
+      StatusCode: "200",
+      status: "OK",
+    });
+  });
+
+  it.each([
+    {
+      expectLastRecordedCall: (PanelId: string, body: string) => {
+        expect(
+          xapi.Command.UserInterface.Extensions.Panel.Save,
+        ).toHaveBeenLastCalledWith({ PanelId }, body);
+        expect(xapi.callHistory.command.at(-1)).toEqual(
+          expect.objectContaining({
+            body,
+            normalizedPath: ["UserInterface", "Extensions", "Panel", "Save"],
+            params: { PanelId },
+          }),
+        );
+      },
+      name: "new style command path",
+      runCommand: (PanelId: string, body: string) =>
+        xapi.Command.UserInterface.Extensions.Panel.Save({ PanelId }, body),
+    },
+    {
+      expectLastRecordedCall: (PanelId: string, body: string) => {
+        expect(xapi.command).toHaveBeenLastCalledWith(
+          "UserInterface Extensions Panel Save",
+          { PanelId },
+          body,
+        );
+        expect(xapi.callHistory.command.at(-1)).toEqual(
+          expect.objectContaining({
+            body,
+            normalizedPath: ["UserInterface", "Extensions", "Panel", "Save"],
+            params: { PanelId },
+          }),
+        );
+      },
+      name: "old style command path",
+      runCommand: (PanelId: string, body: string) =>
+        xapi.command("UserInterface Extensions Panel Save", { PanelId }, body),
+    },
+  ])("validates schema command string limits by UTF-8 byte length with $name", async ({
+    expectLastRecordedCall,
+    runCommand,
+  }) => {
+    const validPanelId = `${"\u00f8".repeat(127)}x`;
+    const invalidPanelId = "\u00f8".repeat(128);
+    const createPanelBody = (PanelId: string) =>
+      `<Extensions><Version>1.11</Version><Panel><PanelId>${PanelId}</PanelId><Type>Panel</Type><Location>Hidden</Location><Icon>Info</Icon><Color>#1170CF</Color><Name>Parity</Name><ActivityType>Custom</ActivityType></Panel></Extensions>`;
+
+    expect(Buffer.byteLength(validPanelId, "utf8")).toBe(255);
+    expect(Buffer.byteLength(invalidPanelId, "utf8")).toBe(256);
+    expect(invalidPanelId.length).toBeLessThanOrEqual(255);
+
+    await expect(
+      runCommand(validPanelId, createPanelBody(validPanelId)),
+    ).resolves.toEqual({ status: "OK" });
+    await expect(
+      runCommand(invalidPanelId, createPanelBody(invalidPanelId)),
+    ).rejects.toEqual({
+      code: 4,
+      message: 'Bad usage: Bad argument to parameter "PanelId".',
+    });
+    expectLastRecordedCall(invalidPanelId, createPanelBody(invalidPanelId));
+  });
+
+  it.each([
+    {
+      expectLastRecordedCall: (Text: string) => {
+        expect(xapi.Command.Message.Send).toHaveBeenLastCalledWith({ Text });
+        expect(xapi.callHistory.command.at(-1)).toEqual(
+          expect.objectContaining({
+            normalizedPath: ["Message", "Send"],
+            params: { Text },
+          }),
+        );
+      },
+      name: "new style command path",
+      runCommand: (Text: string) => xapi.Command.Message.Send({ Text }),
+    },
+    {
+      expectLastRecordedCall: (Text: string) => {
+        expect(xapi.command).toHaveBeenLastCalledWith("Message Send", { Text });
+        expect(xapi.callHistory.command.at(-1)).toEqual(
+          expect.objectContaining({
+            normalizedPath: ["Message", "Send"],
+            params: { Text },
+          }),
+        );
+      },
+      name: "old style command path",
+      runCommand: (Text: string) => xapi.command("Message Send", { Text }),
+    },
+  ])("validates Message Send Text by UTF-8 byte length with $name", async ({
+    expectLastRecordedCall,
+    runCommand,
+  }) => {
+    const invalidTextError = {
+      code: 4,
+      message: 'Bad usage: Bad argument to parameter "Text".',
+    };
+    const asciiAtLimit = "x".repeat(8192);
+    const asciiOverLimit = "x".repeat(8193);
+    const twoByteAtLimit = "\u00f8".repeat(4096);
+    const twoByteOverLimit = "\u00f8".repeat(4097);
+
+    expect(Buffer.byteLength(asciiAtLimit, "utf8")).toBe(8192);
+    expect(Buffer.byteLength(asciiOverLimit, "utf8")).toBe(8193);
+    expect(Buffer.byteLength(twoByteAtLimit, "utf8")).toBe(8192);
+    expect(Buffer.byteLength(twoByteOverLimit, "utf8")).toBe(8194);
+    expect(twoByteOverLimit.length).toBeLessThanOrEqual(8192);
+
+    await expect(runCommand(asciiAtLimit)).resolves.toEqual({ status: "OK" });
+    await expect(runCommand(asciiOverLimit)).rejects.toEqual(invalidTextError);
+    expectLastRecordedCall(asciiOverLimit);
+
+    await expect(runCommand(twoByteAtLimit)).resolves.toEqual({ status: "OK" });
+    await expect(runCommand(twoByteOverLimit)).rejects.toEqual(invalidTextError);
+    expectLastRecordedCall(twoByteOverLimit);
+  });
+
   it("rejects command calls when required parameters are missing from the argument object", async () => {
     await expect(xapi.Command.Audio.Volume.Set({})).rejects.toEqual({
       code: 4,
@@ -885,6 +1264,57 @@ describe("Command paths", () => {
       code: 4,
       message: "Invalid or missing parameters",
     });
+  });
+});
+
+describe("schema-backed xConfiguration value validation", () => {
+  it.each([
+    {
+      expectLastRecordedCall: (value: string) => {
+        expect(xapi.Config.SystemUnit.Name.set).toHaveBeenLastCalledWith(value);
+        expect(xapi.callHistory.config.set.at(-1)).toEqual(
+          expect.objectContaining({
+            normalizedPath: ["SystemUnit", "Name"],
+            value,
+          }),
+        );
+      },
+      name: "new style config path",
+      setConfig: (value: string) => xapi.Config.SystemUnit.Name.set(value),
+    },
+    {
+      expectLastRecordedCall: (value: string) => {
+        expect(xapi.config.set).toHaveBeenLastCalledWith(
+          "SystemUnit Name",
+          value,
+        );
+        expect(xapi.callHistory.config.set.at(-1)).toEqual(
+          expect.objectContaining({
+            normalizedPath: ["SystemUnit", "Name"],
+            value,
+          }),
+        );
+      },
+      name: "old style config path",
+      setConfig: (value: string) => xapi.config.set("SystemUnit Name", value),
+    },
+  ])("validates schema config string limits by UTF-8 byte length with $name", async ({
+    expectLastRecordedCall,
+    setConfig,
+  }) => {
+    const validName = "\u00f8".repeat(25);
+    const invalidName = "\u00f8".repeat(26);
+
+    expect(Buffer.byteLength(validName, "utf8")).toBe(50);
+    expect(Buffer.byteLength(invalidName, "utf8")).toBe(52);
+    expect(invalidName.length).toBeLessThanOrEqual(50);
+
+    await expect(setConfig(validName)).resolves.toBe(validName);
+    await expect(setConfig(invalidName)).rejects.toEqual({
+      code: 4,
+      message: "Invalid or missing parameters",
+    });
+    expectLastRecordedCall(invalidName);
   });
 });
 

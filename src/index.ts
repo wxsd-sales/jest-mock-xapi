@@ -4,6 +4,7 @@ export { default } from "./xapi.ts";
 export { MockXapi } from "./xapi.ts";
 export type {
   CommandHandler,
+  HttpClientResponseInit,
   NormalizedPathSegment,
   PathInput,
   XapiCallHistory,

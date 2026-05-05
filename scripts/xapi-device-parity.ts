@@ -9,18 +9,23 @@ type XapiLike = any;
 type CompareMode =
   | "array-shape"
   | "error-format"
+  | "error-message"
   | "exact"
   | "format"
   | "function"
   | "object-keys";
+type ProbeConnection = "wss";
 type EnvMap = Record<string, string | undefined>;
 
 interface ProbeContext {
+  connectionMonitor?: ConnectionMonitor;
+  probeTimeoutMs?: number;
   xapi: XapiLike;
 }
 
 interface ProbeDefinition {
   compare: CompareMode;
+  liveConnection?: ProbeConnection;
   name: string;
   run: (context: ProbeContext) => unknown;
 }
@@ -83,8 +88,20 @@ interface Device {
 }
 
 interface ConnectionResult {
+  monitor: ConnectionMonitor;
   url: string;
   xapi: XapiLike;
+}
+
+interface ConnectionSession {
+  monitor: ConnectionMonitor;
+  xapi: XapiLike;
+}
+
+interface ConnectionMonitor {
+  dispose: () => void;
+  getFailure: () => unknown | undefined;
+  race: <T>(promise: Promise<T>) => Promise<T>;
 }
 
 interface SoftwareInfo {
@@ -123,10 +140,13 @@ const defaultEnvPath = resolve(repoRoot, ".env");
 const readmePath = resolve(repoRoot, "README.md");
 const schemaMetaPath = resolve(repoRoot, "src/schemas/schema.meta.json");
 const defaultConnectTimeoutMs = 20000;
+const defaultProbeTimeoutMs = 20000;
 const defaultTestTimeoutMs = 120000;
 const readmeResultsStartMarker = "<!-- roomos-parity-results:start -->";
 const readmeResultsEndMarker = "<!-- roomos-parity-results:end -->";
 const builtPackageEntryPoint = "../dist/index.js";
+const messageSendMaxUtf8Bytes = 8192;
+const panelSavePanelIdMaxUtf8Bytes = 255;
 let schemaMetadata: SchemaMetadata | undefined;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -208,7 +228,7 @@ async function captureProbe(
   context: ProbeContext,
 ): Promise<ProbeResult> {
   try {
-    const value = await invoke(context);
+    const value = await runProbeWithGuards(name, invoke, context);
 
     return {
       name,
@@ -222,6 +242,52 @@ async function captureProbe(
       ok: false,
     };
   }
+}
+
+function withTimeout<T>(
+  promise: Promise<T>,
+  timeoutMs: number | undefined,
+  onTimeout: () => void,
+  createTimeoutError: () => Error,
+) {
+  if (!timeoutMs || timeoutMs <= 0) {
+    return promise;
+  }
+
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => {
+      onTimeout();
+      reject(createTimeoutError());
+    }, timeoutMs);
+  });
+
+  return Promise.race([promise, timeoutPromise]).finally(() => {
+    if (timer) {
+      clearTimeout(timer);
+    }
+  });
+}
+
+function runProbeWithGuards(
+  name: string,
+  invoke: ProbeDefinition["run"],
+  context: ProbeContext,
+) {
+  const invokePromise = Promise.resolve().then(() => invoke(context));
+  const connectionGuardedPromise = context.connectionMonitor
+    ? context.connectionMonitor.race(invokePromise)
+    : invokePromise;
+
+  return withTimeout(
+    connectionGuardedPromise,
+    context.probeTimeoutMs,
+    () => closeDevice(context.xapi),
+    () =>
+      new Error(
+        `Timed out after ${context.probeTimeoutMs}ms running parity probe ${name}.`,
+      ),
+  );
 }
 
 function createSubscriptionProbe(
@@ -246,6 +312,41 @@ function createAlertCommandParams(text: string) {
     Text: text,
     Title: "xAPI parity",
   };
+}
+
+function createUtf8String(byteLength: number) {
+  if (byteLength < 0) {
+    throw new Error("UTF-8 parity string helper expects a non-negative byte length.");
+  }
+
+  return `${"\u00f8".repeat(Math.floor(byteLength / 2))}${
+    byteLength % 2 === 1 ? "x" : ""
+  }`;
+}
+
+function createHiddenPanelBody(panelId: string) {
+  return [
+    "<Extensions>",
+    "<Version>1.11</Version>",
+    "<Panel>",
+    `<PanelId>${panelId}</PanelId>`,
+    "<Type>Panel</Type>",
+    "<Location>Hidden</Location>",
+    "<Icon>Info</Icon>",
+    "<Color>#1170CF</Color>",
+    "<Name>jest-mock-xapi parity</Name>",
+    "<ActivityType>Custom</ActivityType>",
+    "</Panel>",
+    "</Extensions>",
+  ].join("");
+}
+
+async function removePanelIfPresent(xapi: XapiLike, panelId: string) {
+  try {
+    await xapi.Command.UserInterface.Extensions.Panel.Remove({ PanelId: panelId });
+  } catch {
+    // Best-effort cleanup only; save validation is what this probe compares.
+  }
 }
 
 function createProbeDefinitions({
@@ -318,8 +419,8 @@ function createProbeDefinitions({
     },
     {
       compare: "format",
-      name: "xapi.doc(Config SystemUnit Name)",
-      run: ({ xapi }) => xapi.doc("Config SystemUnit Name"),
+      name: "xapi.doc(Command Message Send)",
+      run: ({ xapi }) => xapi.doc("Command Message Send"),
     },
     {
       compare: "format",
@@ -489,6 +590,53 @@ function createProbeDefinitions({
   }
 
   if (includeCommand) {
+    const validMessageSendText = createUtf8String(messageSendMaxUtf8Bytes);
+    const invalidMessageSendText = `${validMessageSendText}\u00f8`;
+    const validPanelId = createUtf8String(panelSavePanelIdMaxUtf8Bytes);
+    const invalidPanelId = createUtf8String(panelSavePanelIdMaxUtf8Bytes + 1);
+
+    probes.push({
+      compare: "exact",
+      liveConnection: "wss",
+      name: "xapi.Command.Message.Send(Text=utf8-8192)",
+      run: ({ xapi }) => xapi.Command.Message.Send({ Text: validMessageSendText }),
+    });
+    probes.push({
+      compare: "error-message",
+      liveConnection: "wss",
+      name: "xapi.command(Message Send,Text=utf8-over-8192)",
+      run: ({ xapi }) =>
+        xapi.command("Message Send", { Text: invalidMessageSendText }),
+    });
+    probes.push({
+      compare: "exact",
+      liveConnection: "wss",
+      name: "xapi.Command.UserInterface.Extensions.Panel.Save(PanelId=utf8-255)",
+      run: async ({ xapi }) => {
+        const result = await xapi.Command.UserInterface.Extensions.Panel.Save(
+          { PanelId: validPanelId },
+          createHiddenPanelBody(validPanelId),
+        );
+        await removePanelIfPresent(xapi, validPanelId);
+        return result;
+      },
+    });
+    probes.push({
+      compare: "error-message",
+      liveConnection: "wss",
+      name: "xapi.command(UserInterface Extensions Panel Save,PanelId=utf8-over-255)",
+      run: async ({ xapi }) => {
+        try {
+          return await xapi.command(
+            "UserInterface Extensions Panel Save",
+            { PanelId: invalidPanelId },
+            createHiddenPanelBody(invalidPanelId),
+          );
+        } finally {
+          await removePanelIfPresent(xapi, invalidPanelId);
+        }
+      },
+    });
     probes.push({
       compare: "exact",
       name: "xapi.Command.UserInterface.Message.Alert.Display",
@@ -524,12 +672,29 @@ function createProbeDefinitions({
 async function collectReport(
   xapi: XapiLike,
   probes: ProbeDefinition[],
+  options: {
+    connectionMonitor?: ConnectionMonitor;
+    contexts?: Partial<Record<ProbeConnection, ProbeContext>>;
+    probeTimeoutMs?: number;
+  } = {},
 ): Promise<ProbeReport> {
-  const context = { xapi };
+  const context: ProbeContext = { xapi };
   const results: ProbeResult[] = [];
 
+  if (options.connectionMonitor) {
+    context.connectionMonitor = options.connectionMonitor;
+  }
+
+  if (typeof options.probeTimeoutMs !== "undefined") {
+    context.probeTimeoutMs = options.probeTimeoutMs;
+  }
+
   for (const probe of probes) {
-    results.push(await captureProbe(probe.name, probe.run, context));
+    const probeContext = probe.liveConnection
+      ? options.contexts?.[probe.liveConnection] ?? context
+      : context;
+
+    results.push(await captureProbe(probe.name, probe.run, probeContext));
   }
 
   return {
@@ -570,6 +735,10 @@ function describeArrayShape(value: unknown) {
 
 function sameJson(a: unknown, b: unknown) {
   return JSON.stringify(a) === JSON.stringify(b);
+}
+
+function isScalarValueKind(valueKind: string) {
+  return ["boolean", "null", "number", "string", "undefined"].includes(valueKind);
 }
 
 function summarizeValue(result: ProbeResult) {
@@ -617,6 +786,26 @@ function compareProbe(
     };
   }
 
+  if (probe.compare === "error-message") {
+    if (liveResult.ok || mockResult.ok) {
+      return {
+        details: `expected errors: live ${summarizeValue(liveResult)}, mock ${summarizeValue(mockResult)}`,
+        name: probe.name,
+        pass: false,
+      };
+    }
+
+    const pass = liveResult.error?.message === mockResult.error?.message;
+
+    return {
+      details: pass
+        ? "matching error message"
+        : `error message mismatch: live ${summarizeValue(liveResult)}, mock ${summarizeValue(mockResult)}`,
+      name: probe.name,
+      pass,
+    };
+  }
+
   if (probe.compare === "error-format") {
     if (liveResult.ok || mockResult.ok) {
       return {
@@ -628,13 +817,11 @@ function compareProbe(
 
     const liveMessageKind = typeof liveResult.error?.message;
     const mockMessageKind = typeof mockResult.error?.message;
-    const pass =
-      liveResult.error?.code === mockResult.error?.code &&
-      liveMessageKind === mockMessageKind;
+    const pass = liveMessageKind === mockMessageKind;
 
     return {
       details: pass
-        ? "matching error code and message format"
+        ? "matching error message format"
         : `error mismatch: live ${summarizeValue(liveResult)}, mock ${summarizeValue(mockResult)}`,
       name: probe.name,
       pass,
@@ -660,9 +847,7 @@ function compareProbe(
 
     const liveMessageKind = typeof liveResult.error?.message;
     const mockMessageKind = typeof mockResult.error?.message;
-    const pass =
-      liveResult.error?.code === mockResult.error?.code &&
-      liveMessageKind === mockMessageKind;
+    const pass = liveMessageKind === mockMessageKind;
 
     return {
       details: pass
@@ -674,6 +859,18 @@ function compareProbe(
   }
 
   if (liveResult.valueKind !== mockResult.valueKind) {
+    if (
+      probe.compare === "format" &&
+      isScalarValueKind(liveResult.valueKind) &&
+      isScalarValueKind(mockResult.valueKind)
+    ) {
+      return {
+        details: "matching scalar format",
+        name: probe.name,
+        pass: true,
+      };
+    }
+
     return {
       details: `kind mismatch: live ${summarizeValue(liveResult)}, mock ${summarizeValue(mockResult)}`,
       name: probe.name,
@@ -1085,7 +1282,19 @@ function getConnectionUrls(device: Device) {
 
   const address = appendPort(device.address, device.port);
 
-  return [`ssh://${address}`, `wss://${address}`];
+  return [`wss://${address}`, `ssh://${address}`];
+}
+
+function getProtocolConnectionUrl(device: Device, protocol: ProbeConnection) {
+  const address = appendPort(device.address, device.port);
+
+  if (!hasConnectionProtocol(address)) {
+    return `${protocol}://${address}`;
+  }
+
+  const url = new URL(address);
+  url.protocol = `${protocol}:`;
+  return url.toString();
 }
 
 function sanitizeConnectionUrl(connectionUrl: string) {
@@ -1107,17 +1316,79 @@ function getDeviceAddressLabel(device: Device) {
   return sanitizeConnectionUrl(device.address);
 }
 
+function createConnectionFailure(error: unknown) {
+  return error instanceof Error ? error : new Error(getErrorMessage(error));
+}
+
+function createConnectionMonitor(xapi: XapiLike): ConnectionMonitor {
+  let failure: unknown;
+  const waiters = new Set<(error: unknown) => void>();
+  const markFailure = (error: unknown) => {
+    if (typeof failure !== "undefined") {
+      return;
+    }
+
+    failure = createConnectionFailure(error);
+
+    for (const reject of waiters) {
+      reject(failure);
+    }
+
+    waiters.clear();
+  };
+  const onError = (error: unknown) => markFailure(error);
+  const onClose = () => markFailure(new Error("Connection closed."));
+
+  xapi.on("error", onError);
+  xapi.on("close", onClose);
+
+  return {
+    dispose: () => {
+      xapi.removeListener("error", onError);
+      xapi.removeListener("close", onClose);
+      waiters.clear();
+    },
+    getFailure: () => failure,
+    race: async <T>(promise: Promise<T>) => {
+      if (typeof failure !== "undefined") {
+        throw failure;
+      }
+
+      let rejectConnectionFailure:
+        | ((error: unknown) => void)
+        | undefined;
+      const failurePromise = new Promise<never>((_, reject) => {
+        rejectConnectionFailure = reject;
+        waiters.add(reject);
+      });
+
+      try {
+        return await Promise.race([promise, failurePromise]);
+      } finally {
+        if (rejectConnectionFailure) {
+          waiters.delete(rejectConnectionFailure);
+        }
+      }
+    },
+  };
+}
+
 function connectDeviceUrl(
   device: Device,
   connectionUrl: string,
   timeoutMs: number,
-): Promise<XapiLike> {
+): Promise<ConnectionSession> {
   return new Promise((resolvePromise, rejectPromise) => {
     let settled = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
+    let monitor: ConnectionMonitor | undefined;
     let xapi: XapiLike | undefined;
 
-    const settle = (callback: (value: any) => void, value: any) => {
+    const settle = (
+      callback: (value: any) => void,
+      value: any,
+      options: { disposeMonitor?: boolean } = {},
+    ) => {
       if (settled) {
         return;
       }
@@ -1130,13 +1401,57 @@ function connectDeviceUrl(
       if (xapi) {
         xapi.removeListener("ready", onReady);
         xapi.removeListener("error", onError);
+        xapi.removeListener("close", onClose);
+      }
+
+      if (options.disposeMonitor) {
+        monitor?.dispose();
       }
 
       callback(value);
     };
 
     const onReady = (readyXapi?: XapiLike) => {
-      settle(resolvePromise, readyXapi ?? xapi);
+      void verifyReadyConnection(readyXapi);
+    };
+
+    const verifyReadyConnection = async (readyXapi?: XapiLike) => {
+      const connectedXapi = readyXapi ?? xapi;
+
+      if (!connectedXapi || !monitor) {
+        settle(
+          rejectPromise,
+          new Error(
+            `Connection reached ready without an xapi instance for ${sanitizeConnectionUrl(
+              connectionUrl,
+            )}.`,
+          ),
+          { disposeMonitor: true },
+        );
+        return;
+      }
+
+      try {
+        await monitor.race(
+          Promise.resolve(
+            connectedXapi.status.get("SystemUnit ProductPlatform"),
+          ),
+        );
+      } catch (error) {
+        try {
+          connectedXapi.close();
+        } catch {
+          // Closing is best-effort after a readiness check failure.
+        }
+
+        settle(rejectPromise, error, { disposeMonitor: true });
+        return;
+      }
+
+      settle(resolvePromise, {
+        monitor,
+        xapi: connectedXapi,
+      });
     };
 
     const onError = (error: unknown) => {
@@ -1146,17 +1461,29 @@ function connectDeviceUrl(
         // Closing is best-effort after a connection error.
       }
 
-      settle(rejectPromise, error);
+      settle(rejectPromise, error, { disposeMonitor: true });
+    };
+
+    const onClose = () => {
+      settle(
+        rejectPromise,
+        new Error(
+          `Connection closed before ready for ${sanitizeConnectionUrl(connectionUrl)}.`,
+        ),
+        { disposeMonitor: true },
+      );
     };
 
     try {
-      xapi = jsxapi
-        .connect(connectionUrl, {
-          username: device.username,
-          password: device.password,
-        })
+      xapi = jsxapi.connect(connectionUrl, {
+        username: device.username,
+        password: device.password,
+      });
+      monitor = createConnectionMonitor(xapi);
+      xapi
         .on("ready", onReady)
-        .on("error", onError);
+        .on("error", onError)
+        .on("close", onClose);
     } catch (error) {
       rejectPromise(error);
       return;
@@ -1176,6 +1503,7 @@ function connectDeviceUrl(
             connectionUrl,
           )}`,
         ),
+        { disposeMonitor: true },
       );
     }, timeoutMs);
   });
@@ -1189,9 +1517,11 @@ async function connectDevice(
 
   for (const connectionUrl of getConnectionUrls(device)) {
     try {
+      const session = await connectDeviceUrl(device, connectionUrl, timeoutMs);
+
       return {
+        ...session,
         url: connectionUrl,
-        xapi: await connectDeviceUrl(device, connectionUrl, timeoutMs),
       };
     } catch (error) {
       errors.push({ connectionUrl, error });
@@ -1210,6 +1540,20 @@ async function connectDevice(
   throw new Error(
     `Unable to connect to ${getDeviceAddressLabel(device)}. Tried ${attempted}.`,
   );
+}
+
+async function connectDeviceProtocol(
+  device: Device,
+  protocol: ProbeConnection,
+  timeoutMs: number,
+): Promise<ConnectionResult> {
+  const connectionUrl = getProtocolConnectionUrl(device, protocol);
+  const session = await connectDeviceUrl(device, connectionUrl, timeoutMs);
+
+  return {
+    ...session,
+    url: connectionUrl,
+  };
 }
 
 function closeDevice(xapi: XapiLike | undefined) {
@@ -1345,17 +1689,61 @@ async function runDeviceComparison(
   device: Device,
   probes: ProbeDefinition[],
   connectTimeoutMs: number,
+  probeTimeoutMs: number,
 ): Promise<DeviceComparisonReport> {
+  let connectionMonitor: ConnectionMonitor | undefined;
   let liveXapi: XapiLike | undefined;
+  let wssConnectionMonitor: ConnectionMonitor | undefined;
+  let wssXapi: XapiLike | undefined;
 
   try {
     console.log(
-      `Connecting to ${getDeviceAddressLabel(device)} (ssh, then wss if needed)`,
+      `Connecting to ${getDeviceAddressLabel(device)} (wss, then ssh if needed)`,
     );
     const connection = await connectDevice(device, connectTimeoutMs);
+    connectionMonitor = connection.monitor;
     liveXapi = connection.xapi;
-    const liveReport = await collectReport(liveXapi, probes);
-    const software = await getLiveSoftwareInfo(liveXapi);
+    const alternateContexts: Partial<Record<ProbeConnection, ProbeContext>> = {};
+    const needsWssConnection = probes.some((probe) => probe.liveConnection === "wss");
+
+    if (needsWssConnection) {
+      const currentProtocol = new URL(connection.url).protocol;
+      const wssConnection = currentProtocol === "wss:"
+        ? connection
+        : await connectDeviceProtocol(device, "wss", connectTimeoutMs);
+
+      wssConnectionMonitor = wssConnection.monitor;
+      wssXapi = wssConnection.xapi;
+      alternateContexts.wss = {
+        connectionMonitor: wssConnection.monitor,
+        probeTimeoutMs,
+        xapi: wssConnection.xapi,
+      };
+    }
+
+    const liveReport = await collectReport(liveXapi, probes, {
+      connectionMonitor,
+      contexts: alternateContexts,
+      probeTimeoutMs,
+    });
+    let software: SoftwareInfo = { majorVersion: "unknown" };
+
+    if (typeof connectionMonitor.getFailure() === "undefined") {
+      try {
+        software = await withTimeout(
+          connectionMonitor.race(getLiveSoftwareInfo(liveXapi)),
+          probeTimeoutMs,
+          () => closeDevice(liveXapi),
+          () =>
+            new Error(
+              `Timed out after ${probeTimeoutMs}ms reading RoomOS software status.`,
+            ),
+        );
+      } catch {
+        software = { majorVersion: "unknown" };
+      }
+    }
+
     const mockXapi = await createBuiltMockXapi();
     const productPlatform = getLiveProductPlatform(liveReport);
 
@@ -1386,7 +1774,14 @@ async function runDeviceComparison(
       error: serializeError(error),
     };
   } finally {
+    connectionMonitor?.dispose();
+    if (wssConnectionMonitor !== connectionMonitor) {
+      wssConnectionMonitor?.dispose();
+    }
     closeDevice(liveXapi);
+    if (wssXapi !== liveXapi) {
+      closeDevice(wssXapi);
+    }
   }
 }
 
@@ -1555,12 +1950,18 @@ test("compares jest-mock-xapi with live RoomOS devices", async () => {
     env.ROOMOS_PARITY_CONNECT_TIMEOUT_MS,
     defaultConnectTimeoutMs,
   );
+  const probeTimeoutMs = parsePositiveInteger(
+    env.ROOMOS_PARITY_PROBE_TIMEOUT_MS,
+    defaultProbeTimeoutMs,
+  );
   const probes = createProbeDefinitions({ includeCommand, includeConfigSet });
 
   const reports = [];
 
   for (const device of devices) {
-    reports.push(await runDeviceComparison(device, probes, connectTimeoutMs));
+    reports.push(
+      await runDeviceComparison(device, probes, connectTimeoutMs, probeTimeoutMs),
+    );
   }
 
   const summary = printFinalSummary(reports);

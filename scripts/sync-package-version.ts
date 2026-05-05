@@ -5,7 +5,7 @@ import {
   statSync,
   writeFileSync,
 } from "fs";
-import { join } from "path";
+import { dirname, join } from "path";
 import { fileURLToPath } from "url";
 
 const packageName = "jest-mock-xapi";
@@ -69,6 +69,13 @@ function getExamplePackagePaths() {
     .sort();
 }
 
+function getExampleLockfilePaths() {
+  return getExamplePackagePaths()
+    .map((packagePath) => join(dirname(packagePath), "package-lock.json"))
+    .filter((lockfilePath) => existsSync(lockfilePath))
+    .sort();
+}
+
 function syncDependencyVersion(
   packageJson: JsonObject,
   versionRange: string,
@@ -96,6 +103,30 @@ function syncDependencyVersion(
   return changed;
 }
 
+function getLockfileRootPackage(lockfile: JsonObject) {
+  const packages = lockfile.packages;
+
+  if (
+    typeof packages !== "object" ||
+    packages === null ||
+    Array.isArray(packages)
+  ) {
+    return null;
+  }
+
+  const rootPackage = (packages as Record<string, unknown>)[""];
+
+  if (
+    typeof rootPackage !== "object" ||
+    rootPackage === null ||
+    Array.isArray(rootPackage)
+  ) {
+    return null;
+  }
+
+  return rootPackage as JsonObject;
+}
+
 function syncExamplePackageVersions(version: string) {
   const versionRange = `^${version}`;
   const changedFiles = [];
@@ -106,6 +137,23 @@ function syncExamplePackageVersions(version: string) {
     if (syncDependencyVersion(packageJson, versionRange)) {
       writeJsonObject(packagePath, packageJson);
       changedFiles.push(packagePath);
+    }
+  }
+
+  return changedFiles;
+}
+
+function syncExampleLockfileVersions(version: string) {
+  const versionRange = `^${version}`;
+  const changedFiles = [];
+
+  for (const lockfilePath of getExampleLockfilePaths()) {
+    const lockfile = readJsonObject(lockfilePath);
+    const rootPackage = getLockfileRootPackage(lockfile);
+
+    if (rootPackage && syncDependencyVersion(rootPackage, versionRange)) {
+      writeJsonObject(lockfilePath, lockfile);
+      changedFiles.push(lockfilePath);
     }
   }
 
@@ -125,21 +173,11 @@ function syncRootLockfileVersion(version: string) {
     changed = true;
   }
 
-  const packages = lockfile.packages;
-  const rootPackage =
-    typeof packages === "object" && packages !== null && !Array.isArray(packages)
-      ? (packages as Record<string, unknown>)[""]
-      : undefined;
+  const rootPackage = getLockfileRootPackage(lockfile);
 
-  if (
-    typeof rootPackage === "object" &&
-    rootPackage !== null &&
-    !Array.isArray(rootPackage)
-  ) {
-    const rootPackageObject = rootPackage as JsonObject;
-
-    if (rootPackageObject.version !== version) {
-      rootPackageObject.version = version;
+  if (rootPackage) {
+    if (rootPackage.version !== version) {
+      rootPackage.version = version;
       changed = true;
     }
   }
@@ -153,9 +191,11 @@ function syncRootLockfileVersion(version: string) {
 
 const version = getRootPackageVersion();
 const changedExamplePackages = syncExamplePackageVersions(version);
+const changedExampleLockfiles = syncExampleLockfileVersions(version);
 const lockfileChanged = syncRootLockfileVersion(version);
 const changedFiles = [
   ...changedExamplePackages,
+  ...changedExampleLockfiles,
   ...(lockfileChanged ? [rootLockfilePath] : []),
 ];
 

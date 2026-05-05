@@ -13,6 +13,21 @@ import {
   missingOrInvalidCommandParametersError,
 } from "./responses.ts";
 import {
+  createHttpClientCommandResult,
+  defaultHttpClientConnectionLimit,
+  getHttpClientCommandPath,
+  httpClientDisabledError,
+  httpClientHttpProtocolNotAllowedError,
+  httpClientInsecureHttpsNotAllowedError,
+  httpClientNoAvailableConnectionsError,
+  isHttpClientCommandPath,
+  type HttpClientHeader as HttpClientHeaderType,
+  type HttpClientHeadersInit as HttpClientHeadersInitType,
+  type HttpClientMethod as HttpClientMethodType,
+  type HttpClientResponseInit as HttpClientResponseInitType,
+  type HttpClientResultBody as HttpClientResultBodyType,
+} from "./http-client.ts";
+import {
   getProductCodes,
   loadSchemaModel,
   proxy,
@@ -713,6 +728,46 @@ export namespace xapi {
       on: CallRecord[];
     };
   }
+
+  /**
+   * Supported `HttpClient` xCommand verbs.
+   *
+   * @group Test-only mock controls
+   * @internal
+   */
+  export type HttpClientMethod = HttpClientMethodType;
+
+  /**
+   * RoomOS `HttpClient` result body mode.
+   *
+   * @group Test-only mock controls
+   * @internal
+   */
+  export type HttpClientResultBody = HttpClientResultBodyType;
+
+  /**
+   * RoomOS-shaped HTTP response header entry.
+   *
+   * @group Test-only mock controls
+   * @internal
+   */
+  export type HttpClientHeader = HttpClientHeaderType;
+
+  /**
+   * Header input accepted by `setHttpClientResponse(...)`.
+   *
+   * @group Test-only mock controls
+   * @internal
+   */
+  export type HttpClientHeadersInit = HttpClientHeadersInitType;
+
+  /**
+   * HTTP response input accepted by `setHttpClientResponse(...)`.
+   *
+   * @group Test-only mock controls
+   * @internal
+   */
+  export type HttpClientResponseInit = HttpClientResponseInitType;
 }
 
 /** @internal */
@@ -748,6 +803,8 @@ export type XapiDocFunction = xapi.doc;
 export type XapiCloseFunction = xapi.JestMockControls & (() => void);
 /** @internal */
 export type CommandHandler = xapi.CommandHandler;
+/** @internal */
+export type HttpClientResponseInit = HttpClientResponseInitType;
 /** @internal */
 export type XapiCallRecord = xapi.CallRecord;
 /** @internal */
@@ -810,6 +867,8 @@ export class MockXapi extends EventEmitter {
   #commandOnceHandlers = new Map<string, CommandHandler[]>();
   #commandResults = new Map<string, unknown>();
   #configStore = createConfigStore();
+  #activeHttpClientConnections = 0;
+  #httpClientResponses = new Map<string, xapi.HttpClientResponseInit>();
   #oldStyleProxyInvocationDepth = 0;
   #oldStyleProxyOriginalPaths: PathInput[] = [];
   #proxyInvocationDepth = 0;
@@ -1345,6 +1404,8 @@ export class MockXapi extends EventEmitter {
     this.#commandOnceHandlers.clear();
     this.#commandResults.clear();
     this.#configStore = createConfigStore();
+    this.#activeHttpClientConnections = 0;
+    this.#httpClientResponses.clear();
     this.#statusStore = createStatusStore();
     this.removeAllListeners();
     this.#clearMockCalls();
@@ -1416,6 +1477,30 @@ export class MockXapi extends EventEmitter {
    */
   setCommandResult(path: PathInput, result: unknown) {
     this.#commandResults.set(this.#getMockPathKey(path), result);
+  }
+
+  /**
+   * Sets a RoomOS-shaped mock response for `HttpClient` xCommands.
+   *
+   * The response is returned for matching `HttpClient Get/Post/Put/Patch/Delete`
+   * calls after normal command parameter validation. 2xx status codes resolve;
+   * every other status rejects with `Command returned an error.` and response
+   * metadata under `error.data`, matching RoomOS.
+   *
+   * `Get` defaults to `ResultBody: "PlainText"`; the other verbs default to
+   * `ResultBody: "None"`. If the call uses `ResultBody: "None"`, the mock omits
+   * `Body` even when this helper configured one.
+   *
+   * @group Test-only mock controls
+   */
+  setHttpClientResponse(
+    methodOrPath: xapi.HttpClientMethod | PathInput,
+    response: xapi.HttpClientResponseInit = {},
+  ) {
+    const commandPath = getHttpClientCommandPath(
+      this.#normalizePath(methodOrPath as PathInput),
+    );
+    this.#httpClientResponses.set(this.#getNormalizedPathKey(commandPath), response);
   }
 
   /**
@@ -1673,6 +1758,103 @@ export class MockXapi extends EventEmitter {
     return handler;
   }
 
+  #createHttpClientCommandResult(
+    normalizedPath: NormalizedPathSegment[],
+    params?: unknown,
+  ) {
+    if (!isHttpClientCommandPath(normalizedPath)) {
+      return null;
+    }
+
+    const preflightError = this.#validateHttpClientCommandPreflight(params);
+
+    if (preflightError) {
+      return createRejectedResult(preflightError);
+    }
+
+    if (this.#activeHttpClientConnections >= defaultHttpClientConnectionLimit) {
+      return createRejectedResult({ ...httpClientNoAvailableConnectionsError });
+    }
+
+    this.#activeHttpClientConnections += 1;
+
+    const commandKey = this.#getNormalizedPathKey(normalizedPath);
+    const response = this.#httpClientResponses.get(commandKey);
+    let result;
+
+    try {
+      result = createHttpClientCommandResult({
+        normalizedPath,
+        params,
+        ...(response ? { response } : {}),
+      });
+    } catch (error) {
+      this.#releaseHttpClientConnection();
+      return createRejectedResult(error);
+    }
+
+    if (!result) {
+      this.#releaseHttpClientConnection();
+      return null;
+    }
+
+    const resultPromise = new Promise<unknown>((resolve, reject) => {
+      setTimeout(() => {
+        if (result.ok) {
+          resolve(result.value);
+          return;
+        }
+
+        reject(result.error);
+      }, result.delayMs);
+    });
+    resultPromise.catch(() => undefined);
+
+    const guardedResult = resultPromise.finally(() => {
+      this.#releaseHttpClientConnection();
+    });
+    guardedResult.catch(() => undefined);
+
+    return guardedResult;
+  }
+
+  #validateHttpClientCommandPreflight(params?: unknown) {
+    if (this.#getConfigStoreValue("HttpClient.Mode") !== "On") {
+      return { ...httpClientDisabledError };
+    }
+
+    const requestParams = this.#isPlainObject(params) ? params : {};
+    const url = requestParams.Url;
+
+    if (
+      this.#getConfigStoreValue("HttpClient.AllowHTTP") === "False" &&
+      typeof url === "string" &&
+      /^http:/i.test(url)
+    ) {
+      return { ...httpClientHttpProtocolNotAllowedError };
+    }
+
+    if (
+      this.#getConfigStoreValue("HttpClient.AllowInsecureHTTPS") === "False" &&
+      requestParams.AllowInsecureHTTPS === "True"
+    ) {
+      return { ...httpClientInsecureHttpsNotAllowedError };
+    }
+
+    return null;
+  }
+
+  #getConfigStoreValue(path: string) {
+    return this.#configStore.get(`Config.${path}`);
+  }
+
+  #releaseHttpClientConnection() {
+    this.#activeHttpClientConnections = Math.max(
+      0,
+      this.#activeHttpClientConnections - 1,
+    );
+  }
+
   #command(path: PathInput, params?: unknown, body?: unknown) {
     const normalizedPath = this.#normalizePath(path);
     const call = this.#recordCall(this.#callHistory.command, path, normalizedPath, {
@@ -1715,6 +1897,12 @@ export class MockXapi extends EventEmitter {
 
     if (commandValidationError) {
       return createRejectedResult(commandValidationError);
+    }
+
+    const httpClientResult = this.#createHttpClientCommandResult(normalizedPath, params);
+
+    if (httpClientResult) {
+      return httpClientResult;
     }
 
     return Promise.resolve(commandSuccessResponse);
@@ -2753,14 +2941,21 @@ export class MockXapi extends EventEmitter {
     return true;
   }
 
-  #createInvalidCommandParameterError() {
+  #createInvalidCommandParameterError(parameterName?: string) {
+    if (parameterName) {
+      return {
+        code: missingOrInvalidCommandParametersError.code,
+        message: `Bad usage: Bad argument to parameter "${parameterName}".`,
+      };
+    }
+
     return {
       code: missingOrInvalidCommandParametersError.code,
       message: missingOrInvalidCommandParametersError.message,
     };
   }
 
-  #isPlainObject(value: unknown) {
+  #isPlainObject(value: unknown): value is Record<string, unknown> {
     return typeof value === "object" && value !== null && !Array.isArray(value);
   }
 
@@ -2806,12 +3001,13 @@ export class MockXapi extends EventEmitter {
       typeof minLengthRaw === "string" ? Number(minLengthRaw) : undefined;
     const maxLength =
       typeof maxLengthRaw === "string" ? Number(maxLengthRaw) : undefined;
+    const utf8ByteLength = Buffer.byteLength(value, "utf8");
 
-    if (typeof minLength === "number" && value.length < minLength) {
+    if (typeof minLength === "number" && utf8ByteLength < minLength) {
       return false;
     }
 
-    if (typeof maxLength === "number" && value.length > maxLength) {
+    if (typeof maxLength === "number" && utf8ByteLength > maxLength) {
       return false;
     }
 
@@ -2869,6 +3065,20 @@ export class MockXapi extends EventEmitter {
     return true;
   }
 
+  #validateCommandParameterValue(
+    parameterName: string,
+    valuespace: any,
+    value: unknown,
+  ) {
+    return this.#matchesParameterValue(valuespace, value)
+      ? null
+      : this.#createInvalidCommandParameterError(
+          valuespace?.type === "String" || valuespace?.type === "StringArray"
+            ? parameterName
+            : undefined,
+        );
+  }
+
   #validateCommandArguments(path: string[], parameters: unknown) {
     const commandKey = path.join(".");
     const schemaModel = this.#getActiveSchemaModel();
@@ -2903,7 +3113,7 @@ export class MockXapi extends EventEmitter {
     }
 
     const parameterRecord = parameters as Record<string, unknown>;
-    let firstBadParameterName: string | null = null;
+    let firstParameterValidationError: { code: number; message: string } | null = null;
 
     for (const signature of activeSignatures) {
       let signatureIsValid = true;
@@ -2923,9 +3133,15 @@ export class MockXapi extends EventEmitter {
         }
 
         const value = parameterRecord[parameter.name];
-        if (!this.#matchesParameterValue(parameter.valuespace, value)) {
+        const validationError = this.#validateCommandParameterValue(
+          parameter.name,
+          parameter.valuespace,
+          value,
+        );
+
+        if (validationError) {
           signatureIsValid = false;
-          firstBadParameterName ??= parameter.name;
+          firstParameterValidationError ??= validationError;
           break;
         }
       }
@@ -2939,8 +3155,8 @@ export class MockXapi extends EventEmitter {
       }
     }
 
-    if (firstBadParameterName) {
-      return this.#createInvalidCommandParameterError();
+    if (firstParameterValidationError) {
+      return firstParameterValidationError;
     }
 
     return missingOrInvalidCommandParametersError;
