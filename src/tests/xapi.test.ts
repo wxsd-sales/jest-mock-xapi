@@ -1199,6 +1199,146 @@ describe("Command paths", () => {
 
   it.each([
     {
+      expectLastRecordedCall: (body: string) => {
+        expect(
+          xapi.Command.UserInterface.Extensions.Panel.Save,
+        ).toHaveBeenLastCalledWith({ PanelId: "xml-validation-panel" }, body);
+        expect(xapi.callHistory.command.at(-1)).toEqual(
+          expect.objectContaining({
+            body,
+            normalizedPath: ["UserInterface", "Extensions", "Panel", "Save"],
+            params: { PanelId: "xml-validation-panel" },
+          }),
+        );
+      },
+      name: "new style command path",
+      runCommand: (body: string) =>
+        xapi.Command.UserInterface.Extensions.Panel.Save(
+          { PanelId: "xml-validation-panel" },
+          body,
+        ),
+    },
+    {
+      expectLastRecordedCall: (body: string) => {
+        expect(xapi.command).toHaveBeenLastCalledWith(
+          "UserInterface Extensions Panel Save",
+          { PanelId: "xml-validation-panel" },
+          body,
+        );
+        expect(xapi.callHistory.command.at(-1)).toEqual(
+          expect.objectContaining({
+            body,
+            normalizedPath: ["UserInterface", "Extensions", "Panel", "Save"],
+            params: { PanelId: "xml-validation-panel" },
+          }),
+        );
+      },
+      name: "old style command path",
+      runCommand: (body: string) =>
+        xapi.command(
+          "UserInterface Extensions Panel Save",
+          { PanelId: "xml-validation-panel" },
+          body,
+        ),
+    },
+  ])("validates Panel Save XML body with $name", async ({
+    expectLastRecordedCall,
+    runCommand,
+  }) => {
+    const validPanel = `
+<Extensions>
+  <Panel>
+    <Location>HomeScreen</Location>
+    <Icon>Info</Icon>
+    <Name>button name</Name>
+    <ActivityType>Custom</ActivityType>
+  </Panel>
+</Extensions>`;
+    const invalidIconPanel = `
+<Extensions>
+  <Panel>
+    <Icon>Invalid Icon</Icon>
+    <Name>button name</Name>
+    <ActivityType>Custom</ActivityType>
+  </Panel>
+</Extensions>`;
+    const missingActivityTypePanel = `
+<Extensions>
+  <Panel>
+    <Location>HomeScreen</Location>
+    <Icon>Info</Icon>
+    <Name>button name</Name>
+  </Panel>
+</Extensions>`;
+    const panelWithoutExtensions = `
+  <Panel>
+    <Location>HomeScreen</Location>
+    <Icon>Info</Icon>
+    <Name>button name</Name>
+    <ActivityType>Custom</ActivityType>
+  </Panel>`;
+    const malformedPanel = `
+<Extensions>
+  <Panel>
+    <Location>HomeScreen
+    <Icon>Info</Icon>
+    <Name>button name</Name>
+    <ActivityType>Custom</ActivityType>
+  </Panel>
+</Extensions>`;
+    const missingPanel = `
+<Extensions>
+</Extensions>`;
+    const unescapedAmpersandPanel = `
+<Extensions>
+  <Panel>
+    <Location>HomeScreen</Location>
+    <Icon>Info</Icon>
+    <Name>bad xml value &</Name>
+    <ActivityType>Custom</ActivityType>
+  </Panel>
+</Extensions>`;
+    const twoPanels = `
+<Extensions>
+  <Panel><Name>one</Name></Panel>
+  <Panel><Name>two</Name></Panel>
+</Extensions>`;
+
+    await expect(runCommand(validPanel)).resolves.toEqual({ status: "OK" });
+    await expect(runCommand(invalidIconPanel)).resolves.toEqual({ status: "OK" });
+    await expect(runCommand(missingActivityTypePanel)).resolves.toEqual({
+      status: "OK",
+    });
+
+    await expect(runCommand(panelWithoutExtensions)).rejects.toEqual({
+      code: 1,
+      message: "Expected a single Panel, got 0",
+    });
+    await expect(runCommand("")).rejects.toEqual({
+      code: 1,
+      message: "Failed to parse xml",
+    });
+    await expect(runCommand(malformedPanel)).rejects.toEqual({
+      code: 1,
+      message: "Failed to parse xml",
+    });
+    await expect(runCommand(missingPanel)).rejects.toEqual({
+      code: 1,
+      message: "Expected a single Panel, got 0",
+    });
+    await expect(runCommand(unescapedAmpersandPanel)).rejects.toEqual({
+      code: 1,
+      message: "Failed to parse xml",
+    });
+    await expect(runCommand(twoPanels)).rejects.toEqual({
+      code: 1,
+      message: "Expected a single Panel, got 2",
+    });
+    expectLastRecordedCall(twoPanels);
+  });
+
+  it.each([
+    {
       expectLastRecordedCall: (Text: string) => {
         expect(xapi.Command.Message.Send).toHaveBeenLastCalledWith({ Text });
         expect(xapi.callHistory.command.at(-1)).toEqual(

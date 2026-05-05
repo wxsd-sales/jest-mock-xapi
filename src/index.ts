@@ -3,8 +3,14 @@ export { default } from "./xapi.ts";
 /** @internal */
 export { MockXapi } from "./xapi.ts";
 export type {
-  CommandHandler,
+  HttpClientHeader,
+  HttpClientHeadersInit,
+  HttpClientMethod,
   HttpClientResponseInit,
+  HttpClientResultBody,
+} from "./validators/index.ts";
+export type {
+  CommandHandler,
   NormalizedPathSegment,
   PathInput,
   XapiCallHistory,

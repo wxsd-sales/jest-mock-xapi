@@ -341,11 +341,98 @@ function createHiddenPanelBody(panelId: string) {
   ].join("");
 }
 
+function createBareHiddenPanelBody(panelId: string) {
+  return [
+    "<Panel>",
+    `<PanelId>${panelId}</PanelId>`,
+    "<Type>Panel</Type>",
+    "<Location>Hidden</Location>",
+    "<Icon>Info</Icon>",
+    "<Name>jest-mock-xapi parity</Name>",
+    "<ActivityType>Custom</ActivityType>",
+    "</Panel>",
+  ].join("");
+}
+
+function createMalformedHiddenPanelBody(panelId: string) {
+  return [
+    "<Extensions>",
+    "<Panel>",
+    `<PanelId>${panelId}</PanelId>`,
+    "<Type>Panel</Type>",
+    "<Location>Hidden",
+    "<Icon>Info</Icon>",
+    "<Name>jest-mock-xapi parity</Name>",
+    "<ActivityType>Custom</ActivityType>",
+    "</Panel>",
+    "</Extensions>",
+  ].join("");
+}
+
+function createHiddenPanelBodyWithInvalidIcon(panelId: string) {
+  return [
+    "<Extensions>",
+    "<Panel>",
+    `<PanelId>${panelId}</PanelId>`,
+    "<Type>Panel</Type>",
+    "<Location>Hidden</Location>",
+    "<Icon>Invalid Icon</Icon>",
+    "<Name>jest-mock-xapi parity</Name>",
+    "<ActivityType>Custom</ActivityType>",
+    "</Panel>",
+    "</Extensions>",
+  ].join("");
+}
+
+function createHiddenPanelBodyWithoutActivityType(panelId: string) {
+  return [
+    "<Extensions>",
+    "<Panel>",
+    `<PanelId>${panelId}</PanelId>`,
+    "<Type>Panel</Type>",
+    "<Location>Hidden</Location>",
+    "<Icon>Info</Icon>",
+    "<Name>jest-mock-xapi parity</Name>",
+    "</Panel>",
+    "</Extensions>",
+  ].join("");
+}
+
+function createHiddenPanelBodyWithUnescapedAmpersand(panelId: string) {
+  return [
+    "<Extensions>",
+    "<Panel>",
+    `<PanelId>${panelId}</PanelId>`,
+    "<Type>Panel</Type>",
+    "<Location>Hidden</Location>",
+    "<Icon>Info</Icon>",
+    "<Name>bad xml value &</Name>",
+    "<ActivityType>Custom</ActivityType>",
+    "</Panel>",
+    "</Extensions>",
+  ].join("");
+}
+
 async function removePanelIfPresent(xapi: XapiLike, panelId: string) {
   try {
     await xapi.Command.UserInterface.Extensions.Panel.Remove({ PanelId: panelId });
   } catch {
     // Best-effort cleanup only; save validation is what this probe compares.
+  }
+}
+
+async function runPanelSaveValidationProbe(
+  xapi: XapiLike,
+  panelId: string,
+  body: string,
+) {
+  try {
+    return await xapi.Command.UserInterface.Extensions.Panel.Save(
+      { PanelId: panelId },
+      body,
+    );
+  } finally {
+    await removePanelIfPresent(xapi, panelId);
   }
 }
 
@@ -594,6 +681,7 @@ function createProbeDefinitions({
     const invalidMessageSendText = `${validMessageSendText}\u00f8`;
     const validPanelId = createUtf8String(panelSavePanelIdMaxUtf8Bytes);
     const invalidPanelId = createUtf8String(panelSavePanelIdMaxUtf8Bytes + 1);
+    const panelSaveValidationPanelId = "jest_mock_xapi_parity_panel";
 
     probes.push({
       compare: "exact",
@@ -613,12 +701,14 @@ function createProbeDefinitions({
       liveConnection: "wss",
       name: "xapi.Command.UserInterface.Extensions.Panel.Save(PanelId=utf8-255)",
       run: async ({ xapi }) => {
-        const result = await xapi.Command.UserInterface.Extensions.Panel.Save(
-          { PanelId: validPanelId },
-          createHiddenPanelBody(validPanelId),
-        );
-        await removePanelIfPresent(xapi, validPanelId);
-        return result;
+        try {
+          return await xapi.Command.UserInterface.Extensions.Panel.Save(
+            { PanelId: validPanelId },
+            createHiddenPanelBody(validPanelId),
+          );
+        } finally {
+          await removePanelIfPresent(xapi, validPanelId);
+        }
       },
     });
     probes.push({
@@ -636,6 +726,90 @@ function createProbeDefinitions({
           await removePanelIfPresent(xapi, invalidPanelId);
         }
       },
+    });
+    probes.push({
+      compare: "exact",
+      liveConnection: "wss",
+      name: "xapi.Command.UserInterface.Extensions.Panel.Save(XML=valid)",
+      run: ({ xapi }) =>
+        runPanelSaveValidationProbe(
+          xapi,
+          panelSaveValidationPanelId,
+          createHiddenPanelBody(panelSaveValidationPanelId),
+        ),
+    });
+    probes.push({
+      compare: "error-message",
+      liveConnection: "wss",
+      name: "xapi.Command.UserInterface.Extensions.Panel.Save(XML=bare-panel)",
+      run: ({ xapi }) =>
+        runPanelSaveValidationProbe(
+          xapi,
+          panelSaveValidationPanelId,
+          createBareHiddenPanelBody(panelSaveValidationPanelId),
+        ),
+    });
+    probes.push({
+      compare: "error-message",
+      liveConnection: "wss",
+      name: "xapi.Command.UserInterface.Extensions.Panel.Save(XML=empty)",
+      run: ({ xapi }) =>
+        runPanelSaveValidationProbe(xapi, panelSaveValidationPanelId, ""),
+    });
+    probes.push({
+      compare: "error-message",
+      liveConnection: "wss",
+      name: "xapi.Command.UserInterface.Extensions.Panel.Save(XML=malformed)",
+      run: ({ xapi }) =>
+        runPanelSaveValidationProbe(
+          xapi,
+          panelSaveValidationPanelId,
+          createMalformedHiddenPanelBody(panelSaveValidationPanelId),
+        ),
+    });
+    probes.push({
+      compare: "exact",
+      liveConnection: "wss",
+      name: "xapi.Command.UserInterface.Extensions.Panel.Save(XML=invalid-icon)",
+      run: ({ xapi }) =>
+        runPanelSaveValidationProbe(
+          xapi,
+          panelSaveValidationPanelId,
+          createHiddenPanelBodyWithInvalidIcon(panelSaveValidationPanelId),
+        ),
+    });
+    probes.push({
+      compare: "exact",
+      liveConnection: "wss",
+      name: "xapi.Command.UserInterface.Extensions.Panel.Save(XML=missing-activity-type)",
+      run: ({ xapi }) =>
+        runPanelSaveValidationProbe(
+          xapi,
+          panelSaveValidationPanelId,
+          createHiddenPanelBodyWithoutActivityType(panelSaveValidationPanelId),
+        ),
+    });
+    probes.push({
+      compare: "error-message",
+      liveConnection: "wss",
+      name: "xapi.Command.UserInterface.Extensions.Panel.Save(XML=no-panel)",
+      run: ({ xapi }) =>
+        runPanelSaveValidationProbe(
+          xapi,
+          panelSaveValidationPanelId,
+          "<Extensions></Extensions>",
+        ),
+    });
+    probes.push({
+      compare: "error-message",
+      liveConnection: "wss",
+      name: "xapi.Command.UserInterface.Extensions.Panel.Save(XML=unescaped-ampersand)",
+      run: ({ xapi }) =>
+        runPanelSaveValidationProbe(
+          xapi,
+          panelSaveValidationPanelId,
+          createHiddenPanelBodyWithUnescapedAmpersand(panelSaveValidationPanelId),
+        ),
     });
     probes.push({
       compare: "exact",

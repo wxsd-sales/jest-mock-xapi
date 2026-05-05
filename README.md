@@ -4,10 +4,11 @@ Run Cisco RoomOS JavaScript macro tests in Node.js while preserving the normal `
 
 This project provides a Jest-compatible mock of the RoomOS `xapi` module so JavaScript macros for Cisco RoomOS devices can be tested locally in a standard Node environment. It exists so macro developers can validate behavior without deploying to a device for every change or changing production macro imports.
 
-
 ## Overview
 
 The package exposes a mocked default `xapi` export that mirrors the RoomOS macro runtime and is backed by generated RoomOS schemas. Known paths, product-specific availability, default configuration values, command parameters, and `xapi.doc(...)` results behave much closer to a real device.
+
+If you are setting up Jest for the first time, start with the official [Jest Getting Started guide](https://jestjs.io/docs/getting-started).
 
 ### New style API support
 
@@ -27,7 +28,7 @@ xapi.Event.UserInterface.Extensions.Panel.Clicked.on((event) => {
 });
 ```
 
-See [Use new style RoomOS API](#use-new-style-roomos-api) and [Set values and trigger xAPI updates](#set-values-and-trigger-xapi-updates).
+See [Use RoomOS API in tests](#use-roomos-api-in-tests) and [Set values and trigger xAPI updates](#set-values-and-trigger-xapi-updates).
 
 ### Old style API support
 
@@ -47,7 +48,7 @@ xapi.event.on("UserInterface Extensions Panel Clicked", (event) => {
 });
 ```
 
-See [Use old style RoomOS API](#use-old-style-roomos-api).
+Later examples keep the new style form visible and place old style equivalents in expandable details blocks.
 
 ### Product-enforced xAPI usage
 
@@ -89,7 +90,6 @@ expect(xapi.Command.Dial).toHaveBeenCalledWith({
 
 See [Set leaf status and config values](#set-leaf-status-and-config-values), [Emit xEvent payloads](#emit-xevent-payloads), [Assert xCommand calls](#assert-xcommand-calls), and [Mock utilities](#mock-utilities).
 
-
 ## Setup
 
 ### Prerequisites
@@ -101,6 +101,7 @@ See [Set leaf status and config values](#set-leaf-status-and-config-values), [Em
   `import xapi from "xapi";`
 
 ### Installation
+
 1.  Install `jest-mock-xapi` and Jest in your macro project.
     ```sh
     npm install --save-dev jest jest-mock-xapi
@@ -108,6 +109,7 @@ See [Set leaf status and config values](#set-leaf-status-and-config-values), [Em
 2.  Choose one Jest integration option in your macro project's `package.json`.
 
     **Option 1 (recommended):** Map `xapi` directly to `jest-mock-xapi` with `moduleNameMapper`.
+
     ```json
     {
       "type": "module",
@@ -127,6 +129,7 @@ See [Set leaf status and config values](#set-leaf-status-and-config-values), [Em
     See the [speed-dial-macro example package.json](./examples/speed-dial-macro/package.json) for this option in a working macro project.
 
     **Option 2:** Register the virtual `xapi` module through the package's setup entrypoint if you prefer a setup-file workflow.
+
     ```json
     {
       "type": "module",
@@ -140,7 +143,9 @@ See [Set leaf status and config values](#set-leaf-status-and-config-values), [Em
       }
     }
     ```
+
 3.  Write tests that import your macro, set xAPI values or emit xAPI changes, and then assert the macro responded correctly.
+
     ```js
     import { beforeEach, describe, expect, it, jest } from "@jest/globals";
 
@@ -165,14 +170,17 @@ See [Set leaf status and config values](#set-leaf-status-and-config-values), [Em
       });
     });
     ```
+
 4.  Run the tests from your macro project.
 
     Run your tests once with:
+
     ```sh
     npm test
     ```
 
     Expected output:
+
     ```text
     PASS ./my-macro.test.js
       my roomos macro
@@ -207,8 +215,6 @@ import xapi from "xapi";
 
 The supported macro-facing surface includes:
 
-#### New style
-
 ```js
 // Commands are schema-backed Jest mock functions.
 await xapi.Command.Audio.Volume.Set({ Level: 10 });
@@ -239,7 +245,8 @@ xapi.Status.Audio.Volume.get.mockResolvedValueOnce(55);
 
 The same operation shape is available for any schema-backed path supported by the selected product.
 
-#### Old style
+<details>
+<summary>Old style equivalent</summary>
 
 ```js
 // Commands use spaced public RoomOS paths.
@@ -272,6 +279,8 @@ xapi.status.get.mockResolvedValueOnce(55);
 xapi.command.mockResolvedValueOnce("Dial", result);
 ```
 
+</details>
+
 #### Additional runtime surface
 
 ```js
@@ -301,28 +310,39 @@ Use these when a test needs to prepare mock device state or simulate an xAPI upd
 ```js
 // Set a status value and notify matching status listeners.
 xapi.Status.Audio.Volume.set(30);
-// xapi.setStatus("Audio Volume", 30);
 
 // Set a config value and notify matching config listeners.
 await xapi.Config.Audio.DefaultVolume.set(70);
-// await xapi.config.set("Audio DefaultVolume", 70);
-// await xapi.setConfig("Audio DefaultVolume", 70);
 
 // Emit an event payload to matching event listeners.
 xapi.Event.UserInterface.Extensions.Panel.Clicked.emit({
   PanelId: "speed-dial-panel",
 });
-// xapi.emitEvent("UserInterface Extensions Panel Clicked", {
-//   PanelId: "speed-dial-panel",
-// });
 
 // Remove a status branch and emit the RoomOS-style ghost payload for indexed branches.
 xapi.Status.Call[7].remove();
-// xapi.removeStatus("Call 7");
 
 // Reset values, listeners, command overrides, and Jest mock call counts.
 xapi.reset();
 ```
+
+<details>
+<summary>Old style and lower-level equivalents</summary>
+
+```js
+xapi.setStatus("Audio Volume", 30);
+
+await xapi.config.set("Audio DefaultVolume", 70);
+await xapi.setConfig("Audio DefaultVolume", 70);
+
+xapi.emitEvent("UserInterface Extensions Panel Clicked", {
+  PanelId: "speed-dial-panel",
+});
+
+xapi.removeStatus("Call 7");
+```
+
+</details>
 
 ##### Jest mock function controls
 
@@ -334,8 +354,19 @@ xapi.Command.Dial.mockResolvedValueOnce(result);
 
 // New style operation functions expose Jest helpers too.
 xapi.Status.Audio.Volume.get.mockResolvedValueOnce(55);
-xapi.Event.UserInterface.Extensions.Panel.Clicked.on.mockImplementationOnce(handler);
+xapi.Event.UserInterface.Extensions.Panel.Clicked.on.mockImplementationOnce(
+  handler,
+);
 
+// Lower-level helpers can override shared command behavior.
+xapi.setCommandResult("Dial", result);
+xapi.setCommandHandler("Dial", handler);
+```
+
+<details>
+<summary>Old style equivalents</summary>
+
+```js
 // Mixed old/new style calls share cached path-level mocks.
 await xapi.command("Dial", params);
 expect(xapi.Command.Dial).toHaveBeenCalledWith(params);
@@ -352,15 +383,13 @@ xapi.command.mockImplementationOnce("Dial", handler);
 xapi.command.mockResolvedValueOnce("Dial", value);
 xapi.command.mockRejectedValueOnce("Dial", error);
 xapi.command.mockReturnValueOnce("Dial", value);
-
-// Lower-level helpers can override both styles at once.
-xapi.setCommandResult("Dial", result);
-xapi.setCommandHandler("Dial", handler);
 ```
+
+</details>
 
 #### Jest mock APIs
 
-The mock exposes Jest's mock-function API on both new style and old style xAPI functions. Use these APIs when you want to control a mocked function result or assert how a macro called xAPI:
+The mock exposes Jest's [mock-function API](https://jestjs.io/docs/mock-function-api) on mocked xAPI functions. Use these APIs when you want to control a mocked function result or assert how a macro called xAPI:
 
 ```js
 // Call assertions use normal Jest mock matchers.
@@ -404,7 +433,10 @@ xapi.Command.Dial.mockResolvedValueOnce({
 });
 ```
 
-For old style command calls, use the same Jest helper names with the old style command path as the first argument:
+<details>
+<summary>Old style equivalent</summary>
+
+Use the same Jest helper names with the old style command path as the first argument:
 
 ```js
 xapi.command.mockResolvedValueOnce("Dial", {
@@ -414,6 +446,9 @@ xapi.command.mockResolvedValueOnce("Dial", {
 
 The standard Jest form is still available on `xapi.command` too. When called without a path, it applies to the next `xapi.command(...)` invocation regardless of command path.
 
+</details>
+
+ <br>
 
 Promise-returning APIs resolve or reject like the macro runtime. Subscriptions return an unsubscribe function, and `once(...)` listeners automatically unsubscribe after the first matching update.
 
@@ -431,7 +466,7 @@ beforeEach(async () => {
 });
 ```
 
-### Use new style RoomOS API
+### Use RoomOS API in tests
 
 New style paths keep tests visually close to the xAPI paths used in RoomOS macros. Command paths are Jest mock functions, so tests can use Jest mock helpers for one-off responses. The mock also adds test helpers to new style paths: status paths support `.set(...)`, event paths support `.emit(...)`, and config paths use the normal RoomOS `.set(...)` API.
 
@@ -456,9 +491,8 @@ it("uses new style xAPI helpers", async () => {
 });
 ```
 
-For lowercase `xapi.command(...)` calls, pass the old style command path to the same Jest helper name, for example `xapi.command.mockImplementationOnce("Dial", handler)`.
-
-### Use old style RoomOS API
+<details>
+<summary>Old style equivalent</summary>
 
 The mock also supports the commonly used lowercase macro APIs. String paths use the same spaced format shown in the public RoomOS documentation, and these calls return promises like the RoomOS runtime.
 
@@ -480,21 +514,36 @@ it("uses old style xAPI helpers", async () => {
 });
 ```
 
-New style paths avoid string path parsing. When old style helpers are used, paths are normalized before lookup and call tracking. Strings normally use spaces, empty path segments are removed, string segments are capitalized, and numeric strings are converted to numbers.
+</details>
+ <br>
+
+New style paths avoid string path parsing.
 
 ```js
 await xapi.Status.Audio.Volume.get();
-// await xapi.status.get("Audio Volume"); // ["Audio", "Volume"]
 
 await xapi.Status.Call[1].Status.get();
-// await xapi.status.get(["Call", "1", "Status"]); // ["Call", 1, "Status"]
 ```
 
-The examples below lead with new style syntax and show the closest old style equivalent as a comment where one exists.
+<details>
+<summary>Old style path equivalents</summary>
+
+Old style helpers normalize paths before lookup and call tracking. Strings normally use spaces, empty path segments are removed, string segments are capitalized, and numeric strings are converted to numbers.
+
+```js
+await xapi.status.get("Audio Volume"); // ["Audio", "Volume"]
+
+await xapi.status.get(["Call", "1", "Status"]); // ["Call", 1, "Status"]
+```
+
+</details>
+ <br>
+
+The visible examples below use new style syntax. When an old style equivalent is useful, it appears in an expandable details block.
 
 ### Set values and trigger xAPI updates
 
-The mock lets tests update status and config values while notifying the same listeners a macro would register at runtime. Prefer the new style form in examples, with the old style helper shown as the equivalent where useful.
+The mock lets tests update status and config values while notifying the same listeners a macro would register at runtime.
 
 ```js
 import { expect, it, jest } from "@jest/globals";
@@ -504,17 +553,26 @@ it("sets status values and notifies xStatus listeners", async () => {
   const handler = jest.fn();
 
   xapi.Status.Audio.Volume.on(handler);
-  // xapi.status.on("Audio Volume", handler);
 
   xapi.Status.Audio.Volume.set(20);
-  // xapi.setStatus("Audio Volume", 20);
 
   await expect(xapi.Status.Audio.Volume.get()).resolves.toBe(20);
-  // await expect(xapi.status.get("Audio Volume")).resolves.toBe(20);
 
   expect(handler).toHaveBeenCalledWith(20);
 });
 ```
+
+<details>
+<summary>Old style equivalent</summary>
+
+```js
+xapi.status.on("Audio Volume", handler);
+xapi.setStatus("Audio Volume", 20);
+await expect(xapi.status.get("Audio Volume")).resolves.toBe(20);
+```
+
+</details>
+ <br>
 
 Config paths already have a RoomOS `.set(...)` API. In the mock, setting a config value also notifies matching config listeners.
 
@@ -526,19 +584,28 @@ it("sets config values and notifies config listeners", async () => {
   const handler = jest.fn();
 
   xapi.Config.Audio.DefaultVolume.on(handler);
-  // xapi.config.on("Audio DefaultVolume", handler);
 
   await xapi.Config.Audio.DefaultVolume.set(100);
-  // await xapi.config.set("Audio DefaultVolume", 100);
 
   await expect(xapi.Config.Audio.DefaultVolume.get()).resolves.toBe(100);
-  // await expect(xapi.config.get("Audio DefaultVolume")).resolves.toBe(100);
 
   expect(handler).toHaveBeenCalledWith(100);
 });
 ```
 
-Command paths are Jest mock functions, so a test can set a command result directly on the new style command path. The old style equivalent uses the same Jest helper name with the old style command path as the first argument.
+<details>
+<summary>Old style equivalent</summary>
+
+```js
+xapi.config.on("Audio DefaultVolume", handler);
+await xapi.config.set("Audio DefaultVolume", 100);
+await expect(xapi.config.get("Audio DefaultVolume")).resolves.toBe(100);
+```
+
+</details>
+ <br>
+
+Command paths are Jest mock functions, so a test can set a command result directly on the new style command path.
 
 ```js
 import { expect, it } from "@jest/globals";
@@ -549,34 +616,54 @@ it("mocks a command response", async () => {
   xapi.Command.Dial.mockImplementationOnce(async (params) => ({
     dialed: params.Number,
   }));
-  // xapi.command.mockImplementationOnce("Dial", async (params) => ({
-  //   dialed: params.Number,
-  // }));
 
   await expect(
     xapi.Command.Dial({ Number: "number@example.com" }),
   ).resolves.toEqual({ dialed: "number@example.com" });
-  // await expect(
-  //   xapi.command("Dial", { Number: "number@example.com" }),
-  // ).resolves.toEqual({ dialed: "number@example.com" });
 });
 ```
+
+<details>
+<summary>Old style equivalent</summary>
+
+```js
+xapi.command.mockImplementationOnce("Dial", async (params) => ({
+  dialed: params.Number,
+}));
+
+await expect(
+  xapi.command("Dial", { Number: "number@example.com" }),
+).resolves.toEqual({ dialed: "number@example.com" });
+```
+
+</details>
+ <br>
 
 The same pattern works for the common Jest result helpers:
 
 ```js
 xapi.Command.Dial.mockResolvedValueOnce({ status: "dialed" });
-// xapi.command.mockResolvedValueOnce("Dial", { status: "dialed" });
 
 xapi.Command.Dial.mockRejectedValueOnce({ code: 4, message: "Invalid" });
-// xapi.command.mockRejectedValueOnce("Dial", {
-//   code: 4,
-//   message: "Invalid",
-// });
 
 xapi.Command.Dial.mockReturnValueOnce(Promise.resolve({ status: "queued" }));
-// xapi.command.mockReturnValueOnce("Dial", { status: "queued" });
 ```
+
+<details>
+<summary>Old style equivalent</summary>
+
+```js
+xapi.command.mockResolvedValueOnce("Dial", { status: "dialed" });
+xapi.command.mockRejectedValueOnce("Dial", {
+  code: 4,
+  message: "Invalid",
+});
+xapi.command.mockReturnValueOnce("Dial", { status: "queued" });
+```
+
+</details>
+
+<br>
 
 Event payloads can be emitted in the same new style shape used to subscribe to them.
 
@@ -588,20 +675,28 @@ it("emits event payloads", async () => {
   const handler = jest.fn();
 
   xapi.Event.UserInterface.Extensions.Panel.Clicked.on(handler);
-  // xapi.event.on("UserInterface Extensions Panel Clicked", handler);
 
   xapi.Event.UserInterface.Extensions.Panel.Clicked.emit({
     PanelId: "speed-dial-panel",
   });
-  // xapi.emitEvent("UserInterface Extensions Panel Clicked", {
-  //   PanelId: "speed-dial-panel",
-  // });
 
   expect(handler).toHaveBeenCalledWith({
     PanelId: "speed-dial-panel",
   });
 });
 ```
+
+<details>
+<summary>Old style equivalent</summary>
+
+```js
+xapi.event.on("UserInterface Extensions Panel Clicked", handler);
+xapi.emitEvent("UserInterface Extensions Panel Clicked", {
+  PanelId: "speed-dial-panel",
+});
+```
+
+</details>
 
 ### Read schema docs
 
@@ -646,13 +741,36 @@ it("dials the requested destination", async () => {
   expect(xapi.Command.Dial).toHaveBeenCalledWith({
     Number: "number@example.com",
   });
-  // expect(xapi.command).toHaveBeenCalledWith("Dial", {
-  //   Number: "number@example.com",
-  // });
 });
 ```
 
-By default, valid commands resolve with `{ status: "OK" }`. Invalid command paths reject with the same code/message shape used by RoomOS, and schema-backed commands validate required parameters and value ranges. String `MinLength` / `MaxLength` limits are enforced with UTF-8 byte length to match RoomOS over WebSocket, so non-ASCII payloads can exceed a schema limit before `value.length` does. `HttpClient` commands honor `Config.HttpClient.Mode`, `AllowHTTP`, and `AllowInsecureHTTPS`; because RoomOS defaults `Mode` to `Off`, tests should set `xapi.Config.HttpClient.Mode` to `"On"` before using the default mock response. `HttpClient` commands return RoomOS-shaped response objects; `HttpClient Get` defaults to `ResultBody: "PlainText"`, while `Post`, `Put`, `Patch`, and `Delete` default to `ResultBody: "None"`, so `Body` is omitted unless the command requests one. The mock also enforces the RoomOS three-connection `HttpClient` limit; additional concurrent HTTP commands reject with `No available http connections`. Successful and non-2xx `HttpClient` responses use a small default delay before releasing their connection slot, and `setHttpClientResponse(...)` can override that with `delayMs`. For new style commands, use Jest helpers such as `mockResolvedValueOnce(...)` or `mockImplementationOnce(...)` directly on the command path when a test needs a specific response. For old style commands, use the same helper names on `xapi.command` with the command path first, such as `xapi.command.mockResolvedValueOnce("Dial", result)`.
+<details>
+<summary>Old style equivalent</summary>
+
+```js
+expect(xapi.command).toHaveBeenCalledWith("Dial", {
+  Number: "number@example.com",
+});
+```
+
+</details>
+ <br>
+
+- Default command response: valid commands resolve with `{ status: "OK" }`.
+- Invalid command paths: reject with the same code/message shape used by RoomOS.
+- Parameter validation: schema-backed commands validate required parameters and value ranges.
+  - String length: `MinLength` / `MaxLength` use UTF-8 byte length, matching RoomOS over WebSocket.
+  - XML parsing: `UserInterface Extensions Panel Save` requires one `<Panel>` inside `<Extensions>`.
+  - RoomOS-style errors: panel XML errors match messages such as `Failed to parse xml` and `Expected a single Panel, got 0`.
+- HTTP Client:
+  - Config enforcement: honors `Config.HttpClient.Mode`, `AllowHTTP`, and `AllowInsecureHTTPS`.
+  - Default mode: RoomOS defaults `Mode` to `Off`, so set `xapi.Config.HttpClient.Mode` to `"On"` before using default mock responses.
+  - Response body defaults: `Get` returns `PlainText`; `Post`, `Put`, `Patch`, and `Delete` default to `None`.
+  - Connection limit: more than three concurrent requests reject with `No available http connections`.
+  - Response helpers: `setHttpClientResponse(...)` can set status, headers, body, errors, and `delayMs`.
+- Customise command response: use Jest helpers to set your own response.
+  - `mockResolvedValueOnce(...)`
+  - `mockImplementationOnce(...)`
 
 ### Mock utilities
 
@@ -665,61 +783,87 @@ it("prepares state and asserts command calls", async () => {
   const { default: xapi } = await import("xapi");
 
   xapi.Status.Audio.Volume.set(20);
-  // xapi.setStatus("Audio Volume", 20);
 
   await xapi.Config.Audio.DefaultVolume.set(100);
-  // await xapi.config.set("Audio DefaultVolume", 100);
 
   xapi.Command.Dial.mockImplementationOnce(async (params) => ({
     dialed: params.Number,
   }));
-  // xapi.command.mockImplementationOnce("Dial", async (params) => ({
-  //   dialed: params.Number,
-  // }));
 
   await xapi.Command.Dial({ Number: "number@example.com" });
-  // await xapi.command("Dial", { Number: "number@example.com" });
 
   await xapi.Status.Audio.Volume.get();
-  // await xapi.status.get("Audio Volume");
 
   expect(xapi.Command.Dial).toHaveBeenCalledWith({
     Number: "number@example.com",
   });
-  // expect(xapi.command).toHaveBeenCalledWith("Dial", {
-  //   Number: "number@example.com",
-  // });
 });
 ```
 
-Available helpers:
+<details>
+<summary>Old style equivalent</summary>
+
+```js
+xapi.setStatus("Audio Volume", 20);
+await xapi.config.set("Audio DefaultVolume", 100);
+
+xapi.command.mockImplementationOnce("Dial", async (params) => ({
+  dialed: params.Number,
+}));
+
+await xapi.command("Dial", { Number: "number@example.com" });
+await xapi.status.get("Audio Volume");
+
+expect(xapi.command).toHaveBeenCalledWith("Dial", {
+  Number: "number@example.com",
+});
+```
+
+</details>
+
+<br>
+
+**Available helpers:**
 
 State and event helpers:
 
 ```js
 // Update status state and notify matching listeners.
 xapi.Status.Audio.Volume.set(20);
-// xapi.setStatus("Audio Volume", 20);
 
 // Update config state and notify matching listeners.
 await xapi.Config.Audio.DefaultVolume.set(100);
-// await xapi.config.set("Audio DefaultVolume", 100);
-// await xapi.setConfig("Audio DefaultVolume", 100);
 
 // Emit event payloads to matching listeners.
 xapi.Event.UserInterface.Extensions.Panel.Clicked.emit({
   PanelId: "speed-dial-panel",
 });
-// xapi.emitEvent("UserInterface Extensions Panel Clicked", {
-//   PanelId: "speed-dial-panel",
-// });
 
 // Remove a status branch and emit the RoomOS-style ghost payload.
 xapi.Status.Call[7].remove();
-// xapi.removeStatus("Call 7");
 ```
 
-Jest mock function helpers:
+<details>
+<summary>Old style and lower-level equivalents</summary>
+
+```js
+xapi.setStatus("Audio Volume", 20);
+
+await xapi.config.set("Audio DefaultVolume", 100);
+await xapi.setConfig("Audio DefaultVolume", 100);
+
+xapi.emitEvent("UserInterface Extensions Panel Clicked", {
+  PanelId: "speed-dial-panel",
+});
+
+xapi.removeStatus("Call 7");
+```
+
+</details>
+
+<br>
+
+**Jest mock function helpers:**
 
 ```js
 // Set command behavior directly on new style command paths.
@@ -727,8 +871,13 @@ xapi.Command.Dial.mockImplementationOnce(handler);
 xapi.Command.Dial.mockResolvedValueOnce(value);
 xapi.Command.Dial.mockRejectedValueOnce(error);
 xapi.Command.Dial.mockReturnValueOnce(value);
+```
 
-// Mixed-style macro code shares path-level mocks.
+<details>
+<summary>Old style equivalents</summary>
+
+```js
+// Old style calls share cached path-level mocks.
 await xapi.command("Dial", params);
 expect(xapi.Command.Dial).toHaveBeenCalledWith(params);
 
@@ -742,10 +891,14 @@ xapi.command.mockRejectedValueOnce("Dial", error);
 xapi.command.mockReturnValueOnce("Dial", value);
 ```
 
-Lower-level command helpers:
+</details>
+
+<br>
+
+**Lower-level command helpers:**
 
 ```js
-// Apply one command override to both new style and old style calls.
+// Apply one command override to every command call path.
 xapi.setCommandResult("Dial", result);
 xapi.setCommandHandler("Dial", handler);
 
@@ -790,14 +943,24 @@ import xapi from "xapi";
 const macroName = _main_module_name();
 
 xapi.Command.Macros.Macro.Deactivate({ Name: macroName });
-// xapi.command("Macros Macro Deactivate", { Name: macroName });
 ```
+
+<details>
+<summary>Old style equivalent</summary>
+
+```js
+xapi.command("Macros Macro Deactivate", { Name: macroName });
+```
+
+</details>
+
+<br>
 
 For example, calling `_main_module_name()` from `self-deactivating-macro.js` returns `"self-deactivating-macro"`.
 
 ### Set leaf status and config values
 
-Use new style `.set(...)` calls, lowercase `xapi.config.set(...)`, or the test-only `setStatus()` and `setConfig()` helpers to prepare mock device state before importing a macro or invoking a handler. These forms notify matching listeners.
+Use new style `.set(...)` calls to prepare mock device state before importing a macro or invoking a handler. These forms notify matching listeners.
 
 ```js
 import { expect, it } from "@jest/globals";
@@ -806,30 +969,41 @@ it("reads the prepared default volume", async () => {
   const { default: xapi } = await import("xapi");
 
   await xapi.Config.Audio.DefaultVolume.set(100);
-  // await xapi.config.set("Audio DefaultVolume", 100);
 
   xapi.Status.Audio.Volume.set(20);
-  // xapi.setStatus("Audio Volume", 20);
 
   await expect(xapi.Config.Audio.DefaultVolume.get()).resolves.toBe(100);
-  // await expect(xapi.config.get("Audio DefaultVolume")).resolves.toBe(100);
 
   await expect(xapi.Status.Audio.Volume.get()).resolves.toBe(20);
-  // await expect(xapi.status.get("Audio Volume")).resolves.toBe(20);
 
   await xapi.Config.Audio.DefaultVolume.set(0);
-  // await xapi.config.set("Audio DefaultVolume", 0);
 
   xapi.Status.Audio.Volume.set(25);
-  // xapi.setStatus("Audio Volume", 25);
 
   await expect(xapi.Config.Audio.DefaultVolume.get()).resolves.toBe(0);
-  // await expect(xapi.config.get("Audio DefaultVolume")).resolves.toBe(0);
 
   await expect(xapi.Status.Audio.Volume.get()).resolves.toBe(25);
-  // await expect(xapi.status.get("Audio Volume")).resolves.toBe(25);
 });
 ```
+
+<details>
+<summary>Old style and lower-level equivalents</summary>
+
+```js
+await xapi.config.set("Audio DefaultVolume", 100);
+xapi.setStatus("Audio Volume", 20);
+await expect(xapi.config.get("Audio DefaultVolume")).resolves.toBe(100);
+await expect(xapi.status.get("Audio Volume")).resolves.toBe(20);
+
+await xapi.config.set("Audio DefaultVolume", 0);
+xapi.setStatus("Audio Volume", 25);
+await expect(xapi.config.get("Audio DefaultVolume")).resolves.toBe(0);
+await expect(xapi.status.get("Audio Volume")).resolves.toBe(25);
+```
+
+</details>
+
+<br>
 
 ### Select a RoomOS product
 
@@ -844,10 +1018,8 @@ it("handles Desk Pro xAPI differences", async () => {
   const { default: xapi } = await import("xapi");
 
   xapi.Status.SystemUnit.ProductPlatform.set("Desk Pro");
-  // xapi.setStatus("SystemUnit ProductPlatform", "Desk Pro");
 
   await xapi.Config.Video.Output.Connector[1].MonitorRole.set("Auto");
-  // await xapi.config.set("Video Output Connector 1 MonitorRole", "Auto");
 
   await expect(
     xapi.Config.Video.Output.Connector[3].MonitorRole.set("Auto"),
@@ -855,12 +1027,6 @@ it("handles Desk Pro xAPI differences", async () => {
     code: 3,
     message: "No match on address expression",
   });
-  // await expect(
-  //   xapi.config.set("Video Output Connector 3 MonitorRole", "Auto"),
-  // ).rejects.toEqual({
-  //   code: 3,
-  //   message: "No match on address expression",
-  // });
 
   await expect(
     xapi.Config.Video.Output.Connector[1].MonitorRole.set("PresentationOnly"),
@@ -868,17 +1034,34 @@ it("handles Desk Pro xAPI differences", async () => {
     code: 4,
     message: "Invalid or missing parameters",
   });
-  // await expect(
-  //   xapi.config.set(
-  //     "Video Output Connector 1 MonitorRole",
-  //     "PresentationOnly",
-  //   ),
-  // ).rejects.toEqual({
-  //   code: 4,
-  //   message: "Invalid or missing parameters",
-  // });
 });
 ```
+
+<details>
+<summary>Old style and lower-level equivalents</summary>
+
+```js
+xapi.setStatus("SystemUnit ProductPlatform", "Desk Pro");
+await xapi.config.set("Video Output Connector 1 MonitorRole", "Auto");
+
+await expect(
+  xapi.config.set("Video Output Connector 3 MonitorRole", "Auto"),
+).rejects.toEqual({
+  code: 3,
+  message: "No match on address expression",
+});
+
+await expect(
+  xapi.config.set("Video Output Connector 1 MonitorRole", "PresentationOnly"),
+).rejects.toEqual({
+  code: 4,
+  message: "Invalid or missing parameters",
+});
+```
+
+</details>
+
+<br>
 
 The selected schema also provides default software statuses. For example, a schema named `26.5.1 April 2026` produces these default values unless the test overrides them with new style `.set(...)` or `setStatus(...)`:
 
@@ -900,13 +1083,10 @@ it("returns full config branches", async () => {
   const { default: xapi } = await import("xapi");
 
   await xapi.Config.Video.Output.Connector[1].MonitorRole.set("First");
-  // await xapi.config.set("Video Output Connector 1 MonitorRole", "First");
 
   await xapi.Config.Video.Output.Connector[2].MonitorRole.set("Second");
-  // await xapi.config.set("Video Output Connector 2 MonitorRole", "Second");
 
   await expect(xapi.Config.get()).resolves.toHaveProperty("Audio");
-  // await expect(xapi.config.get()).resolves.toHaveProperty("Audio");
 
   await expect(xapi.Config.Video.Output.Connector[1].get()).resolves.toEqual(
     expect.objectContaining({
@@ -914,32 +1094,47 @@ it("returns full config branches", async () => {
       MonitorRole: "First",
     }),
   );
-  // await expect(xapi.config.get("Video Output Connector 1")).resolves.toEqual(
-  //   expect.objectContaining({
-  //     id: "1",
-  //     MonitorRole: "First",
-  //   }),
-  // );
 
   await expect(xapi.Config.Video.Output.Connector.get()).resolves.toEqual([
     expect.objectContaining({ id: "1", MonitorRole: "First" }),
     expect.objectContaining({ id: "2", MonitorRole: "Second" }),
   ]);
-  // await expect(xapi.config.get("Video Output Connector")).resolves.toEqual([
-  //   expect.objectContaining({ id: "1", MonitorRole: "First" }),
-  //   expect.objectContaining({ id: "2", MonitorRole: "Second" }),
-  // ]);
 
   await expect(xapi.Config.Video.Output.Connector["*"].get()).resolves.toEqual([
     expect.objectContaining({ id: "1", MonitorRole: "First" }),
     expect.objectContaining({ id: "2", MonitorRole: "Second" }),
   ]);
-  // await expect(xapi.config.get("Video Output Connector *")).resolves.toEqual([
-  //   expect.objectContaining({ id: "1", MonitorRole: "First" }),
-  //   expect.objectContaining({ id: "2", MonitorRole: "Second" }),
-  // ]);
 });
 ```
+
+<details>
+<summary>Old style equivalent</summary>
+
+```js
+await xapi.config.set("Video Output Connector 1 MonitorRole", "First");
+await xapi.config.set("Video Output Connector 2 MonitorRole", "Second");
+
+await expect(xapi.config.get()).resolves.toHaveProperty("Audio");
+
+await expect(xapi.config.get("Video Output Connector 1")).resolves.toEqual(
+  expect.objectContaining({
+    id: "1",
+    MonitorRole: "First",
+  }),
+);
+
+await expect(xapi.config.get("Video Output Connector")).resolves.toEqual([
+  expect.objectContaining({ id: "1", MonitorRole: "First" }),
+  expect.objectContaining({ id: "2", MonitorRole: "Second" }),
+]);
+
+await expect(xapi.config.get("Video Output Connector *")).resolves.toEqual([
+  expect.objectContaining({ id: "1", MonitorRole: "First" }),
+  expect.objectContaining({ id: "2", MonitorRole: "Second" }),
+]);
+```
+
+</details>
 
 ### Emit xEvent payloads
 
@@ -956,18 +1151,27 @@ it("reacts to a panel press", async () => {
   xapi.Event.UserInterface.Extensions.Panel.Clicked.emit({
     PanelId: "speed-dial-panel",
   });
-  // xapi.emitEvent("UserInterface Extensions Panel Clicked", {
-  //   PanelId: "speed-dial-panel",
-  // });
 
   expect(xapi.Command.Dial).toHaveBeenCalledWith({
     Number: "number@example.com",
   });
-  // expect(xapi.command).toHaveBeenCalledWith("Dial", {
-  //   Number: "number@example.com",
-  // });
 });
 ```
+
+<details>
+<summary>Old style equivalent</summary>
+
+```js
+xapi.emitEvent("UserInterface Extensions Panel Clicked", {
+  PanelId: "speed-dial-panel",
+});
+
+expect(xapi.command).toHaveBeenCalledWith("Dial", {
+  Number: "number@example.com",
+});
+```
+
+</details>
 
 ### Subscribe to leaf updates
 
@@ -981,18 +1185,26 @@ it("notifies leaf status listeners", async () => {
   const handler = jest.fn();
 
   xapi.Status.Audio.Volume.on(handler);
-  // xapi.status.on("Audio Volume", handler);
 
   xapi.Status.Audio.Volume.set(55);
-  // xapi.setStatus("Audio Volume", 55);
 
   xapi.Status.Audio.Volume.set(56);
-  // xapi.setStatus("Audio Volume", 56);
 
   expect(handler).toHaveBeenNthCalledWith(1, 55);
   expect(handler).toHaveBeenNthCalledWith(2, 56);
 });
 ```
+
+<details>
+<summary>Old style equivalent</summary>
+
+```js
+xapi.status.on("Audio Volume", handler);
+xapi.setStatus("Audio Volume", 55);
+xapi.setStatus("Audio Volume", 56);
+```
+
+</details>
 
 ### Subscribe to root or branch updates
 
@@ -1008,39 +1220,26 @@ it("notifies root listeners with relative path payloads", async () => {
   const eventHandler = jest.fn();
 
   xapi.Status.on(statusHandler);
-  // xapi.status.on(statusHandler);
 
   xapi.Config.on(configHandler);
-  // xapi.config.on(configHandler);
 
   xapi.Event.on(eventHandler);
-  // xapi.event.on(eventHandler);
 
   xapi.Status.Audio.Volume.set(55);
-  // xapi.setStatus("Audio Volume", 55);
 
   await xapi.Config.Audio.DefaultVolume.set(100);
-  // await xapi.config.set("Audio DefaultVolume", 100);
 
   xapi.Event.UserInterface.Extensions.Panel.Clicked.emit({
     PanelId: "speed-dial-panel",
   });
-  // xapi.emitEvent("UserInterface Extensions Panel Clicked", {
-  //   PanelId: "speed-dial-panel",
-  // });
 
   xapi.Status.Audio.Volume.set(56);
-  // xapi.setStatus("Audio Volume", 56);
 
   await xapi.Config.Audio.DefaultVolume.set(0);
-  // await xapi.config.set("Audio DefaultVolume", 0);
 
   xapi.Event.UserInterface.Extensions.Panel.Clicked.emit({
     PanelId: "speed-dial-panel-2",
   });
-  // xapi.emitEvent("UserInterface Extensions Panel Clicked", {
-  //   PanelId: "speed-dial-panel-2",
-  // });
 
   expect(statusHandler).toHaveBeenCalledWith({
     Audio: {
@@ -1087,6 +1286,29 @@ it("notifies root listeners with relative path payloads", async () => {
 });
 ```
 
+<details>
+<summary>Old style equivalent</summary>
+
+```js
+xapi.status.on(statusHandler);
+xapi.config.on(configHandler);
+xapi.event.on(eventHandler);
+
+xapi.setStatus("Audio Volume", 55);
+await xapi.config.set("Audio DefaultVolume", 100);
+xapi.emitEvent("UserInterface Extensions Panel Clicked", {
+  PanelId: "speed-dial-panel",
+});
+
+xapi.setStatus("Audio Volume", 56);
+await xapi.config.set("Audio DefaultVolume", 0);
+xapi.emitEvent("UserInterface Extensions Panel Clicked", {
+  PanelId: "speed-dial-panel-2",
+});
+```
+
+</details>
+
 ### Track indexed status branches such as calls
 
 Indexed collection listeners such as `xapi.Status.Call.on(...)` receive the full branch snapshot plus the branch `id`.
@@ -1099,13 +1321,10 @@ it("notifies call listeners as a call branch changes", async () => {
   const handler = jest.fn();
 
   xapi.Status.Call.on(handler);
-  // xapi.status.on("Call", handler);
 
   xapi.Status.Call[42].Direction.set("Outgoing");
-  // xapi.setStatus("Call 42 Direction", "Outgoing");
 
   xapi.Status.Call[42].Status.set("Connected");
-  // xapi.setStatus("Call 42 Status", "Connected");
 
   expect(handler).toHaveBeenNthCalledWith(1, {
     Direction: "Outgoing",
@@ -1119,9 +1338,20 @@ it("notifies call listeners as a call branch changes", async () => {
 });
 ```
 
+<details>
+<summary>Old style equivalent</summary>
+
+```js
+xapi.status.on("Call", handler);
+xapi.setStatus("Call 42 Direction", "Outgoing");
+xapi.setStatus("Call 42 Status", "Connected");
+```
+
+</details>
+
 ### Remove indexed status branches
 
-Use new style `.remove()` or `removeStatus()` to simulate an indexed status branch disappearing, such as a call ending.
+Use new style `.remove()` to simulate an indexed status branch disappearing, such as a call ending.
 
 ```js
 import { expect, it, jest } from "@jest/globals";
@@ -1131,16 +1361,12 @@ it("emits a ghost payload when a call ends", async () => {
   const handler = jest.fn();
 
   xapi.Status.Call.on(handler);
-  // xapi.status.on("Call", handler);
 
   xapi.Status.Call[7].Direction.set("Incoming");
-  // xapi.setStatus("Call 7 Direction", "Incoming");
 
   xapi.Status.Call[7].Status.set("Connected");
-  // xapi.setStatus("Call 7 Status", "Connected");
 
   xapi.Status.Call[7].remove();
-  // xapi.removeStatus("Call 7");
 
   expect(handler).toHaveBeenLastCalledWith({
     ghost: "true",
@@ -1148,6 +1374,18 @@ it("emits a ghost payload when a call ends", async () => {
   });
 });
 ```
+
+<details>
+<summary>Old style and lower-level equivalents</summary>
+
+```js
+xapi.status.on("Call", handler);
+xapi.setStatus("Call 7 Direction", "Incoming");
+xapi.setStatus("Call 7 Status", "Connected");
+xapi.removeStatus("Call 7");
+```
+
+</details>
 
 ## Demo
 
@@ -1171,12 +1409,14 @@ This repository also includes a local-only hardware parity script that connects 
 Validated hardware is generated by `npm run parity:devices` after all live-device checks pass. The table records the public RoomOS schema used for comparison, not the exact software build running on the tested device.
 
 <!-- roomos-parity-results:start -->
-| Hardware | RoomOS major | Tested schema | Result | Last validated |
-| --- | --- | --- | --- | --- |
-| Board 70 | RoomOS 11 | RoomOS 11.33.1 | 45/45 passed | 2026-05-05 |
-| Codec Pro | RoomOS 26 | RoomOS 26.5.1 | 45/45 passed | 2026-05-05 |
-| Desk Pro | RoomOS 26 | RoomOS 26.5.1 | 45/45 passed | 2026-05-05 |
-| Room Bar Pro | RoomOS 26 | RoomOS 26.5.1 | 45/45 passed | 2026-05-05 |
+
+| Hardware     | RoomOS major | Tested schema  | Result       | Last validated |
+| ------------ | ------------ | -------------- | ------------ | -------------- |
+| Board 70     | RoomOS 11    | RoomOS 11.33.1 | 53/53 passed | 2026-05-05     |
+| Codec Pro    | RoomOS 26    | RoomOS 26.5.1  | 53/53 passed | 2026-05-05     |
+| Desk Pro     | RoomOS 26    | RoomOS 26.5.1  | 53/53 passed | 2026-05-05     |
+| Room Bar Pro | RoomOS 26    | RoomOS 26.5.1  | 53/53 passed | 2026-05-05     |
+
 <!-- roomos-parity-results:end -->
 
 Create a local `.env` from `.env.example`:
@@ -1206,7 +1446,7 @@ Run the manual check with:
 npm run parity:devices
 ```
 
-The command probe is enabled by default; it sends `Message Send` payloads, saves and removes a hidden UI extension panel, and displays a short alert on each device. Set `ROOMOS_PARITY_INCLUDE_COMMAND=false` to skip it. `ROOMOS_PARITY_INCLUDE_CONFIG_SET=false` is the default because that probe writes the current `SystemUnit Name` value back to the device. Set `ROOMOS_PARITY_CONNECT_TIMEOUT_MS` and `ROOMOS_PARITY_PROBE_TIMEOUT_MS` to tune connection and per-probe timeouts. Set `ROOMOS_PARITY_UPDATE_README=false` when you want to run parity locally without changing the generated hardware validation table.
+The command probe is enabled by default; it sends `Message Send` payloads, validates hidden `Panel Save` XML body cases, saves and removes a hidden UI extension panel, and displays a short alert on each device. Set `ROOMOS_PARITY_INCLUDE_COMMAND=false` to skip it. `ROOMOS_PARITY_INCLUDE_CONFIG_SET=false` is the default because that probe writes the current `SystemUnit Name` value back to the device. Set `ROOMOS_PARITY_CONNECT_TIMEOUT_MS` and `ROOMOS_PARITY_PROBE_TIMEOUT_MS` to tune connection and per-probe timeouts. Set `ROOMOS_PARITY_UPDATE_README=false` when you want to run parity locally without changing the generated hardware validation table.
 
 ### Update the bundled RoomOS schema
 

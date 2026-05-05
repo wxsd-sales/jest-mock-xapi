@@ -13,6 +13,7 @@ import {
   missingOrInvalidCommandParametersError,
 } from "./responses.ts";
 import {
+  validatePanelSaveBody,
   createHttpClientCommandResult,
   defaultHttpClientConnectionLimit,
   getHttpClientCommandPath,
@@ -21,12 +22,9 @@ import {
   httpClientInsecureHttpsNotAllowedError,
   httpClientNoAvailableConnectionsError,
   isHttpClientCommandPath,
-  type HttpClientHeader as HttpClientHeaderType,
-  type HttpClientHeadersInit as HttpClientHeadersInitType,
-  type HttpClientMethod as HttpClientMethodType,
-  type HttpClientResponseInit as HttpClientResponseInitType,
-  type HttpClientResultBody as HttpClientResultBodyType,
-} from "./http-client.ts";
+  type HttpClientMethod,
+  type HttpClientResponseInit,
+} from "./validators/index.ts";
 import {
   getProductCodes,
   loadSchemaModel,
@@ -729,45 +727,6 @@ export namespace xapi {
     };
   }
 
-  /**
-   * Supported `HttpClient` xCommand verbs.
-   *
-   * @group Test-only mock controls
-   * @internal
-   */
-  export type HttpClientMethod = HttpClientMethodType;
-
-  /**
-   * RoomOS `HttpClient` result body mode.
-   *
-   * @group Test-only mock controls
-   * @internal
-   */
-  export type HttpClientResultBody = HttpClientResultBodyType;
-
-  /**
-   * RoomOS-shaped HTTP response header entry.
-   *
-   * @group Test-only mock controls
-   * @internal
-   */
-  export type HttpClientHeader = HttpClientHeaderType;
-
-  /**
-   * Header input accepted by `setHttpClientResponse(...)`.
-   *
-   * @group Test-only mock controls
-   * @internal
-   */
-  export type HttpClientHeadersInit = HttpClientHeadersInitType;
-
-  /**
-   * HTTP response input accepted by `setHttpClientResponse(...)`.
-   *
-   * @group Test-only mock controls
-   * @internal
-   */
-  export type HttpClientResponseInit = HttpClientResponseInitType;
 }
 
 /** @internal */
@@ -803,8 +762,6 @@ export type XapiDocFunction = xapi.doc;
 export type XapiCloseFunction = xapi.JestMockControls & (() => void);
 /** @internal */
 export type CommandHandler = xapi.CommandHandler;
-/** @internal */
-export type HttpClientResponseInit = HttpClientResponseInitType;
 /** @internal */
 export type XapiCallRecord = xapi.CallRecord;
 /** @internal */
@@ -868,7 +825,7 @@ export class MockXapi extends EventEmitter {
   #commandResults = new Map<string, unknown>();
   #configStore = createConfigStore();
   #activeHttpClientConnections = 0;
-  #httpClientResponses = new Map<string, xapi.HttpClientResponseInit>();
+  #httpClientResponses = new Map<string, HttpClientResponseInit>();
   #oldStyleProxyInvocationDepth = 0;
   #oldStyleProxyOriginalPaths: PathInput[] = [];
   #proxyInvocationDepth = 0;
@@ -1494,8 +1451,8 @@ export class MockXapi extends EventEmitter {
    * @group Test-only mock controls
    */
   setHttpClientResponse(
-    methodOrPath: xapi.HttpClientMethod | PathInput,
-    response: xapi.HttpClientResponseInit = {},
+    methodOrPath: HttpClientMethod | PathInput,
+    response: HttpClientResponseInit = {},
   ) {
     const commandPath = getHttpClientCommandPath(
       this.#normalizePath(methodOrPath as PathInput),
@@ -1897,6 +1854,12 @@ export class MockXapi extends EventEmitter {
 
     if (commandValidationError) {
       return createRejectedResult(commandValidationError);
+    }
+
+    const commandBodyValidationError = validatePanelSaveBody(normalizedPath, body);
+
+    if (commandBodyValidationError) {
+      return createRejectedResult(commandBodyValidationError);
     }
 
     const httpClientResult = this.#createHttpClientCommandResult(normalizedPath, params);
